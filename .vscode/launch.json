@@ -1,0 +1,26 @@
+{
+    // Pick one of these from the Run and Debug panel (F5).
+    "version": "0.2.0",
+    "configurations": [
+        {
+            // Opens the game in Chrome on this laptop.
+            "name": "Tanks: Chrome (laptop)",
+            "type": "dart",
+            "request": "launch",
+            "program": "lib/main.dart",
+            "deviceId": "chrome"
+        },
+        {
+            // Serves the game on your Wi-Fi so phones can open it in Chrome or
+            // Safari at http://<this laptop's IP>:8080. Release mode loads much
+            // faster on a phone than a debug build.
+            "name": "Tanks: Phone over Wi-Fi",
+            "type": "dart",
+            "request": "launch",
+            "program": "lib/main.dart",
+            "deviceId": "web-server",
+            "flutterMode": "release",
+            "args": ["--web-hostname", "0.0.0.0", "--web-port", "8080"]
+        }
+    ]
+}
