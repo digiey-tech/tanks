@@ -207,9 +207,7 @@ class TankGame extends ChangeNotifier {
       // The timer only matters until the result screen shows. Stopping it
       // there keeps snapshots identical, so the host can skip sending them
       // while players sit on the result screen.
-      'o': _over
-          ? [r(math.min(_overTime, resultDelay)), _winner?.index]
-          : null,
+      'o': _over ? [r(math.min(_overTime, resultDelay)), _winner?.index] : null,
     };
   }
 
@@ -219,7 +217,7 @@ class TankGame extends ChangeNotifier {
   final List<_Pose> _posesTo = [];
   List<Offset> _shellsAt = [];
   double _sinceSnapshot = 0;
-  double _snapshotGap = 1 / 30;
+  double _snapshotGap = 1 / 20;
 
   /// Shows a [toSnapshot] from the host. The guest's game never runs
   /// [update]; it only mirrors what the host sends, smoothed by

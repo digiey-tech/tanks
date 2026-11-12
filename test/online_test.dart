@@ -160,28 +160,42 @@ void main() {
     expect(hostLink.closed, isTrue);
   });
 
-  test('sends at most 30 updates a second, and only keepalives when idle', () {
-    final (hostLink, guestLink) = linkPair();
-    final host = OnlineMatch(link: hostLink, isHost: true);
-    final guest = OnlineMatch(link: guestLink, isHost: false);
+  test(
+    'host sends 20 updates a second, guest 15, and only keepalives when idle',
+    () {
+      final (hostLink, guestLink) = linkPair();
+      final host = OnlineMatch(link: hostLink, isHost: true);
+      final guest = OnlineMatch(link: guestLink, isHost: false);
 
-    // Both moving for a second (before red reaches the wall and stops).
-    host.me.controls.move = const Offset(1, 0);
-    guest.me.controls.move = const Offset(1, 0);
-    run(host, guest, 1);
-    expect(hostLink.sent, inInclusiveRange(28, 31));
+      // Red drives for a second (before it reaches the wall and stops)
+      // while the guest's thumb wiggles every frame.
+      host.me.controls.move = const Offset(1, 0);
+      for (var i = 0; i < 60; i++) {
+        guest.me.controls.move = Offset((i % 10) / 10, 0);
+        run(host, guest, 1 / 60);
+      }
+      expect(hostLink.sent, inInclusiveRange(19, 21));
+      expect(guestLink.sent, inInclusiveRange(14, 16));
 
-    // Nobody touching anything for 4 seconds: just keepalives.
-    host.me.controls.move = Offset.zero;
-    guest.me.controls.move = Offset.zero;
-    run(host, guest, 0.5);
-    hostLink.sent = 0;
-    guestLink.sent = 0;
-    run(host, guest, 4);
-    expect(hostLink.sent, lessThanOrEqualTo(9));
-    expect(guestLink.sent, lessThanOrEqualTo(9));
-    expect(host.lost.value || guest.lost.value, isFalse);
-  });
+      // A guest holding the stick steady sends nothing new.
+      guest.me.controls.move = const Offset(1, 0);
+      run(host, guest, 0.2);
+      guestLink.sent = 0;
+      run(host, guest, 1);
+      expect(guestLink.sent, lessThanOrEqualTo(3));
+
+      // Nobody touching anything for 4 seconds: just keepalives.
+      host.me.controls.move = Offset.zero;
+      guest.me.controls.move = Offset.zero;
+      run(host, guest, 0.5);
+      hostLink.sent = 0;
+      guestLink.sent = 0;
+      run(host, guest, 4);
+      expect(hostLink.sent, lessThanOrEqualTo(9));
+      expect(guestLink.sent, lessThanOrEqualTo(9));
+      expect(host.lost.value || guest.lost.value, isFalse);
+    },
+  );
 
   test('the result screen only costs keepalives', () {
     final (hostLink, guestLink) = linkPair();

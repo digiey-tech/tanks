@@ -28,10 +28,14 @@ class OnlineMatch {
   /// Set when the other device leaves or the connection drops.
   final ValueNotifier<bool> lost = ValueNotifier(false);
 
-  /// Up to 30 updates a second each way. The guest smooths between them.
-  /// Kept low because, when the network forces the relay, every message
-  /// counts toward its free daily allowance.
-  static const double sendInterval = 1 / 30;
+  /// The host sends up to 20 updates a second and the guest's screen
+  /// smooths between them. The guest sends its controls at most 15 times a
+  /// second. Kept low because, when the network forces the relay, every
+  /// message may count toward its free daily allowance.
+  static const double hostInterval = 1 / 20;
+  static const double guestInterval = 1 / 15;
+
+  double get _sendInterval => isHost ? hostInterval : guestInterval;
 
   /// When nothing has changed, still send this often so each side knows
   /// the other is there.
@@ -41,7 +45,7 @@ class OnlineMatch {
   /// report the close).
   static const double silenceLimit = 5;
 
-  double _sinceSent = sendInterval;
+  double _sinceSent = double.infinity;
   double _sinceHeard = 0;
   String? _lastSent;
 
@@ -67,7 +71,7 @@ class OnlineMatch {
     }
 
     _sinceSent += dt;
-    if (_sinceSent < sendInterval * 0.8) return;
+    if (_sinceSent < _sendInterval * 0.8) return;
     final message = jsonEncode(isHost ? _snapshot() : _input());
     // Skip repeats (both tanks still, guest not touching anything) apart
     // from an occasional keepalive.
