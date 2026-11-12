@@ -1,8 +1,12 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 
+import 'ai.dart';
 import 'controls.dart';
 import 'game.dart';
 
@@ -11,6 +15,15 @@ void main() {
 }
 
 const Color redColor = Color(0xFFE53935);
+
+/// Whether this looks like a computer rather than a phone or tablet. Only used
+/// to decide whether to show keyboard and mouse tips.
+bool get onComputer => switch (defaultTargetPlatform) {
+  TargetPlatform.windows ||
+  TargetPlatform.macOS ||
+  TargetPlatform.linux => true,
+  _ => false,
+};
 const Color blueColor = Color(0xFF1E88E5);
 
 Color teamColor(Team team) => team == Team.red ? redColor : blueColor;
@@ -28,13 +41,140 @@ class TankApp extends StatelessWidget {
         brightness: Brightness.dark,
         colorSchemeSeed: Colors.blueGrey,
       ),
-      home: const GameScreen(),
+      home: const MenuScreen(),
+    );
+  }
+}
+
+class MenuScreen extends StatefulWidget {
+  const MenuScreen({super.key});
+
+  @override
+  State<MenuScreen> createState() => _MenuScreenState();
+}
+
+class _MenuScreenState extends State<MenuScreen> {
+  Difficulty _difficulty = Difficulty.normal;
+
+  void _start(Difficulty? difficulty) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => GameScreen(difficulty: difficulty),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const buttonText = TextStyle(fontSize: 20, fontWeight: FontWeight.w800);
+    return Scaffold(
+      backgroundColor: const Color(0xFF15181C),
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(20),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 360),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: 'TAN',
+                          style: TextStyle(color: redColor),
+                        ),
+                        TextSpan(
+                          text: 'KS',
+                          style: TextStyle(color: blueColor),
+                        ),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 64,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 6,
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  const Text(
+                    'Single player',
+                    style: TextStyle(fontSize: 16, color: Colors.white70),
+                  ),
+                  const SizedBox(height: 10),
+                  SegmentedButton<Difficulty>(
+                    segments: [
+                      for (final d in Difficulty.values)
+                        ButtonSegment(value: d, label: Text(d.label)),
+                    ],
+                    selected: {_difficulty},
+                    showSelectedIcon: false,
+                    onSelectionChanged: (s) =>
+                        setState(() => _difficulty = s.first),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.icon(
+                    onPressed: () => _start(_difficulty),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: redColor,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      textStyle: buttonText,
+                    ),
+                    icon: const Icon(Icons.person),
+                    label: const Text('1 Player vs CPU'),
+                  ),
+                  if (onComputer) ...[
+                    const SizedBox(height: 8),
+                    const Text(
+                      'WASD or arrows to move, mouse to aim, click to fire.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 13, color: Colors.white54),
+                    ),
+                  ],
+                  const SizedBox(height: 28),
+                  const Text(
+                    'Two players, one phone',
+                    style: TextStyle(fontSize: 16, color: Colors.white70),
+                  ),
+                  const SizedBox(height: 10),
+                  FilledButton.icon(
+                    onPressed: () => _start(null),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: blueColor,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      textStyle: buttonText,
+                    ),
+                    icon: const Icon(Icons.people),
+                    label: const Text('2 Players'),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    onComputer
+                        ? 'Red: WASD, Q/E to aim, Space to fire.\n'
+                              'Blue: arrows, , and . to aim, / or Enter to fire.'
+                        : 'Sit facing each other with the phone flat between you.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: Colors.white54),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
 
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key});
+  /// A null [difficulty] means two human players.
+  const GameScreen({super.key, this.difficulty});
+
+  final Difficulty? difficulty;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -46,10 +186,62 @@ class _GameScreenState extends State<GameScreen>
   late final Ticker _ticker;
   Duration _last = Duration.zero;
 
+  /// Drives the blue tank in single-player mode.
+  TankAi? _ai;
+
+  bool get _singlePlayer => _ai != null;
+
   @override
   void initState() {
     super.initState();
+    final difficulty = widget.difficulty;
+    if (difficulty != null) {
+      _ai = TankAi(game: game, tank: game.blue, difficulty: difficulty);
+    }
     _ticker = createTicker(_onTick)..start();
+  }
+
+  void _rematch() {
+    game.reset();
+    _ai?.reset();
+  }
+
+  void _toMenu() => Navigator.of(context).pop();
+
+  /// In single player the mouse also aims and fires for the red tank. It's
+  /// off in two-player mode so neither player gets an edge from it.
+  TankControls get _mouse => game.red.controls;
+
+  final GlobalKey _arenaKey = GlobalKey();
+
+  late final Map<Tank, KeyBindings> _keys = _singlePlayer
+      ? {game.red: KeyBindings.solo}
+      : {game.red: KeyBindings.red, game.blue: KeyBindings.blue};
+
+  /// Claims game keys so they don't also move focus or press the screen's
+  /// buttons (Space and Enter would otherwise activate a focused button).
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) =>
+      _keys.values.any((k) => k.handles(event.logicalKey))
+      ? KeyEventResult.handled
+      : KeyEventResult.ignored;
+
+  /// Points the red tank's gun at the mouse, wherever it is on screen.
+  void _onMouse(PointerEvent event) {
+    if (!_singlePlayer || event.kind != PointerDeviceKind.mouse) return;
+    final box = _arenaKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return;
+    final scale = box.size.width / TankGame.world.width;
+    _mouse.aimAt = box.globalToLocal(event.position) / scale;
+  }
+
+  void _onArenaPointerDown(PointerDownEvent event) {
+    if (!_singlePlayer || event.kind != PointerDeviceKind.mouse) return;
+    _onMouse(event);
+    if (event.buttons & kPrimaryMouseButton != 0) _mouse.mouseFire = true;
+  }
+
+  void _onArenaPointerUp(PointerEvent event) {
+    if (event.kind == PointerDeviceKind.mouse) _mouse.mouseFire = false;
   }
 
   void _onTick(Duration elapsed) {
@@ -57,7 +249,11 @@ class _GameScreenState extends State<GameScreen>
         (elapsed - _last).inMicroseconds / Duration.microsecondsPerSecond;
     _last = elapsed;
     // Clamp so a dropped frame or a backgrounded tab can't teleport anything.
-    game.update(dt.clamp(0.0, 0.05));
+    final step = dt.clamp(0.0, 0.05);
+    final pressed = HardwareKeyboard.instance.logicalKeysPressed;
+    _keys.forEach((tank, keys) => keys.apply(tank.controls, pressed));
+    _ai?.update(step);
+    game.update(step);
   }
 
   @override
@@ -76,7 +272,15 @@ class _GameScreenState extends State<GameScreen>
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 480),
-            child: _buildGame(),
+            child: Focus(
+              autofocus: true,
+              onKeyEvent: _onKey,
+              child: Listener(
+                onPointerHover: _onMouse,
+                onPointerMove: _onMouse,
+                child: _buildGame(),
+              ),
+            ),
           ),
         ),
       ),
@@ -88,27 +292,52 @@ class _GameScreenState extends State<GameScreen>
       children: [
         Column(
           children: [
-            // Blue sits across from Red, so their controls face them.
-            RotatedBox(
-              quarterTurns: 2,
-              child: ControlPanel(game: game, tank: game.blue),
-            ),
+            if (_singlePlayer)
+              _CpuBar(
+                game: game,
+                difficulty: widget.difficulty!,
+                onExit: _toMenu,
+              )
+            else
+              // Blue sits across from Red, so their controls face them.
+              RotatedBox(
+                quarterTurns: 2,
+                child: ControlPanel(game: game, tank: game.blue),
+              ),
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-                child: Center(
-                  child: AspectRatio(
-                    aspectRatio: TankGame.world.width / TankGame.world.height,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Colors.white24, width: 2),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
-                        child: CustomPaint(
-                          painter: ArenaPainter(game),
-                          child: const SizedBox.expand(),
+              // Clicking anywhere in the arena area fires; clicks on the
+              // on-screen buttons below still work as buttons.
+              child: Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: _onArenaPointerDown,
+                onPointerUp: _onArenaPointerUp,
+                onPointerCancel: _onArenaPointerUp,
+                child: MouseRegion(
+                  cursor: _singlePlayer
+                      ? SystemMouseCursors.precise
+                      : MouseCursor.defer,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 4,
+                    ),
+                    child: Center(
+                      child: AspectRatio(
+                        aspectRatio:
+                            TankGame.world.width / TankGame.world.height,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            border: Border.all(color: Colors.white24, width: 2),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: CustomPaint(
+                              key: _arenaKey,
+                              painter: ArenaPainter(game),
+                              child: const SizedBox.expand(),
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -116,13 +345,22 @@ class _GameScreenState extends State<GameScreen>
                 ),
               ),
             ),
-            ControlPanel(game: game, tank: game.red),
+            ControlPanel(
+              game: game,
+              tank: game.red,
+              label: _singlePlayer ? 'YOU' : null,
+            ),
           ],
         ),
         ListenableBuilder(
           listenable: game,
           builder: (context, _) => game.showResult
-              ? ResultOverlay(game: game)
+              ? ResultOverlay(
+                  game: game,
+                  difficulty: widget.difficulty,
+                  onRematch: _rematch,
+                  onMenu: _toMenu,
+                )
               : const SizedBox.shrink(),
         ),
       ],
@@ -130,12 +368,67 @@ class _GameScreenState extends State<GameScreen>
   }
 }
 
+/// Top strip in single-player mode: the computer's health and a way out.
+class _CpuBar extends StatelessWidget {
+  const _CpuBar({
+    required this.game,
+    required this.difficulty,
+    required this.onExit,
+  });
+
+  final TankGame game;
+  final Difficulty difficulty;
+  final VoidCallback onExit;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            blueColor.withValues(alpha: 0.28),
+            blueColor.withValues(alpha: 0.08),
+          ],
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(4, 4, 12, 4),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: onExit,
+            tooltip: 'Menu',
+            icon: const Icon(Icons.close),
+          ),
+          Expanded(
+            child: HealthBar(game: game, tank: game.blue, label: 'CPU'),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            difficulty.label,
+            style: const TextStyle(fontSize: 13, color: Colors.white60),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// One player's controls: health bar, movement stick, turret rotation, fire.
 class ControlPanel extends StatelessWidget {
-  const ControlPanel({super.key, required this.game, required this.tank});
+  const ControlPanel({
+    super.key,
+    required this.game,
+    required this.tank,
+    this.label,
+  });
 
   final TankGame game;
   final Tank tank;
+
+  /// Shown next to the health bar instead of the team name.
+  final String? label;
 
   @override
   Widget build(BuildContext context) {
@@ -161,7 +454,7 @@ class ControlPanel extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
       child: Column(
         children: [
-          HealthBar(game: game, tank: tank),
+          HealthBar(game: game, tank: tank, label: label),
           const SizedBox(height: 8),
           Expanded(
             child: LayoutBuilder(
@@ -216,10 +509,16 @@ class ControlPanel extends StatelessWidget {
 }
 
 class HealthBar extends StatelessWidget {
-  const HealthBar({super.key, required this.game, required this.tank});
+  const HealthBar({
+    super.key,
+    required this.game,
+    required this.tank,
+    this.label,
+  });
 
   final TankGame game;
   final Tank tank;
+  final String? label;
 
   @override
   Widget build(BuildContext context) {
@@ -233,7 +532,7 @@ class HealthBar extends StatelessWidget {
             SizedBox(
               width: 46,
               child: Text(
-                teamName(tank.team),
+                label ?? teamName(tank.team),
                 style: TextStyle(
                   color: color,
                   fontWeight: FontWeight.w900,
@@ -440,50 +739,105 @@ class ArenaPainter extends CustomPainter {
   bool shouldRepaint(ArenaPainter oldDelegate) => oldDelegate.game != game;
 }
 
-/// Winner screen, split so each player reads their half the right way up.
+/// Winner screen. In two-player mode it is split so each player reads their
+/// half the right way up.
 class ResultOverlay extends StatelessWidget {
-  const ResultOverlay({super.key, required this.game});
+  const ResultOverlay({
+    super.key,
+    required this.game,
+    required this.difficulty,
+    required this.onRematch,
+    required this.onMenu,
+  });
 
   final TankGame game;
+
+  /// Null in two-player mode.
+  final Difficulty? difficulty;
+  final VoidCallback onRematch;
+  final VoidCallback onMenu;
 
   @override
   Widget build(BuildContext context) {
     final winner = game.winner;
-    return ColoredBox(
-      color: Colors.black.withValues(alpha: 0.72),
-      child: Column(
+    final difficulty = this.difficulty;
+    final buttons = Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Expanded(
-            child: RotatedBox(
-              quarterTurns: 2,
-              child: _ResultHalf(winner: winner, viewer: Team.blue),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 12),
-            child: FilledButton.icon(
-              onPressed: game.reset,
-              style: FilledButton.styleFrom(
-                backgroundColor: Colors.white,
-                foregroundColor: Colors.black,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 32,
-                  vertical: 18,
-                ),
-                textStyle: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.w800,
-                ),
+          FilledButton.icon(
+            onPressed: onRematch,
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
+              textStyle: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
               ),
-              icon: const Icon(Icons.replay),
-              label: const Text('Rematch'),
             ),
+            icon: const Icon(Icons.replay),
+            label: const Text('Rematch'),
           ),
-          Expanded(
-            child: _ResultHalf(winner: winner, viewer: Team.red),
+          const SizedBox(width: 12),
+          OutlinedButton.icon(
+            onPressed: onMenu,
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              side: const BorderSide(color: Colors.white54),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+              textStyle: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            icon: const Icon(Icons.home),
+            label: const Text('Menu'),
           ),
         ],
       ),
+    );
+
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.72),
+      child: difficulty != null
+          ? Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _ResultText(
+                    title: switch (winner) {
+                      Team.red => 'YOU WIN!',
+                      Team.blue => 'CPU WINS',
+                      null => 'DRAW',
+                    },
+                    subtitle: switch (winner) {
+                      Team.red => 'You beat the ${difficulty.label} CPU',
+                      Team.blue => 'Try again?',
+                      null => 'Both tanks destroyed',
+                    },
+                    color: winner == null ? Colors.white : teamColor(winner),
+                  ),
+                  const SizedBox(height: 20),
+                  buttons,
+                ],
+              ),
+            )
+          : Column(
+              children: [
+                Expanded(
+                  child: RotatedBox(
+                    quarterTurns: 2,
+                    child: _ResultHalf(winner: winner, viewer: Team.blue),
+                  ),
+                ),
+                buttons,
+                Expanded(
+                  child: _ResultHalf(winner: winner, viewer: Team.red),
+                ),
+              ],
+            ),
     );
   }
 }
@@ -503,26 +857,44 @@ class _ResultHalf extends StatelessWidget {
         : (w == viewer ? 'Victory' : 'Defeat');
     final color = w == null ? Colors.white : teamColor(w);
     return Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            title,
-            style: TextStyle(
-              color: color,
-              fontSize: 44,
-              fontWeight: FontWeight.w900,
-              letterSpacing: 2,
-              shadows: const [Shadow(blurRadius: 12, color: Colors.black)],
-            ),
+      child: _ResultText(title: title, subtitle: subtitle, color: color),
+    );
+  }
+}
+
+class _ResultText extends StatelessWidget {
+  const _ResultText({
+    required this.title,
+    required this.subtitle,
+    required this.color,
+  });
+
+  final String title;
+  final String subtitle;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            color: color,
+            fontSize: 44,
+            fontWeight: FontWeight.w900,
+            letterSpacing: 2,
+            shadows: const [Shadow(blurRadius: 12, color: Colors.black)],
           ),
-          const SizedBox(height: 4),
-          Text(
-            subtitle,
-            style: const TextStyle(fontSize: 20, color: Colors.white70),
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          subtitle,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 20, color: Colors.white70),
+        ),
+      ],
     );
   }
 }

@@ -65,20 +65,48 @@ void main() {
 
   // iPhone 15 and iPhone SE Safari viewports (toolbars visible).
   for (final size in const [Size(393, 660), Size(375, 548), Size(320, 460)]) {
-    testWidgets('fits a ${size.width.toInt()}x${size.height.toInt()} screen', (
-      tester,
-    ) async {
+    final name = '${size.width.toInt()}x${size.height.toInt()}';
+
+    Future<void> openMenu(WidgetTester tester) async {
       tester.view.physicalSize = size * 3;
       tester.view.devicePixelRatio = 3;
       addTearDown(tester.view.reset);
-
       await tester.pumpWidget(const TankApp());
-      await tester.pump(const Duration(milliseconds: 16));
+    }
+
+    testWidgets('two-player mode fits a $name screen', (tester) async {
+      await openMenu(tester);
+      // The menu scrolls on very short screens.
+      await tester.ensureVisible(find.text('2 Players'));
+      await tester.tap(find.text('2 Players'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
 
       expect(find.text('RED'), findsOneWidget);
       expect(find.text('BLUE'), findsOneWidget);
       expect(find.text('FIRE'), findsNWidgets(2));
       expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('single-player mode fits a $name screen', (tester) async {
+      await openMenu(tester);
+      await tester.tap(find.text('Hard'));
+      await tester.pump();
+      await tester.tap(find.text('1 Player vs CPU'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      expect(find.text('YOU'), findsOneWidget);
+      expect(find.text('CPU'), findsOneWidget);
+      expect(find.text('Hard'), findsOneWidget);
+      expect(find.text('FIRE'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+
+      // The close button returns to the menu.
+      await tester.tap(find.byIcon(Icons.close));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('1 Player vs CPU'), findsOneWidget);
     });
   }
 }

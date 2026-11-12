@@ -5,14 +5,31 @@ import 'package:flutter/painting.dart';
 
 enum Team { red, blue }
 
-/// Live input for one tank, written by the touch controls.
+/// Live input for one tank, written by the touch controls and, on a
+/// computer, the keyboard and mouse.
 class TankControls {
   /// Joystick vector in the player's own frame (up = away from the player).
   /// Length is between 0 and 1.
   Offset move = Offset.zero;
+
+  /// Keyboard movement, in screen directions (up = toward the top of the
+  /// screen) for either player, since everyone at a computer sees the screen
+  /// the same way up.
+  Offset keyMove = Offset.zero;
+
   bool rotateLeft = false;
   bool rotateRight = false;
+
+  /// Keyboard turning: -1 counterclockwise, 1 clockwise, 0 none.
+  int keyRotate = 0;
+
+  /// Arena point the mouse is aiming at. The turret turns toward it at the
+  /// normal turning speed. Cleared when the rotate buttons are used.
+  Offset? aimAt;
+
   bool fire = false;
+  bool mouseFire = false;
+  bool keyFire = false;
 }
 
 class Tank {
@@ -170,11 +187,25 @@ class TankGame extends ChangeNotifier {
 
     final controls = tank.controls;
 
-    final turn = (controls.rotateRight ? 1 : 0) - (controls.rotateLeft ? 1 : 0);
-    tank.aim = _wrapAngle(tank.aim + turn * rotateSpeed * dt);
+    final turn =
+        ((controls.rotateRight ? 1 : 0) -
+                (controls.rotateLeft ? 1 : 0) +
+                controls.keyRotate)
+            .clamp(-1, 1);
+    final aimAt = controls.aimAt;
+    if (turn != 0) {
+      controls.aimAt = null;
+      tank.aim = _wrapAngle(tank.aim + turn * rotateSpeed * dt);
+    } else if (aimAt != null && aimAt != tank.position) {
+      final toAim = aimAt - tank.position;
+      final diff = _wrapAngle(math.atan2(toAim.dy, toAim.dx) - tank.aim);
+      final step = rotateSpeed * dt;
+      tank.aim = _wrapAngle(tank.aim + diff.clamp(-step, step));
+    }
 
-    var input = controls.move;
-    if (tank.flipped) input = -input;
+    var input =
+        (tank.flipped ? -controls.move : controls.move) + controls.keyMove;
+    if (input.distance > 1) input = input / input.distance;
     final length = input.distance;
     if (length > 0.12) {
       // Ramp to full speed quickly so small thumb movements still feel snappy.
@@ -184,7 +215,8 @@ class TankGame extends ChangeNotifier {
       tank.hull = math.atan2(velocity.dy, velocity.dx);
     }
 
-    if (controls.fire && tank.cooldown <= 0) {
+    if ((controls.fire || controls.mouseFire || controls.keyFire) &&
+        tank.cooldown <= 0) {
       fire(tank);
     }
   }
@@ -200,18 +232,38 @@ class TankGame extends ChangeNotifier {
   }
 
   bool _blocked(Tank tank, Offset p) {
-    const r = tankRadius;
+    if (!isOpen(p)) return true;
+    final other = _other(tank);
+    return (other.position - p).distance < tankRadius * 2;
+  }
+
+  /// Whether a tank could sit at [p] (with [margin] to spare) without touching
+  /// a wall or the arena edge.
+  bool isOpen(Offset p, {double margin = 0}) {
+    final r = tankRadius + margin;
     if (p.dx < r ||
         p.dy < r ||
         p.dx > world.width - r ||
         p.dy > world.height - r) {
-      return true;
+      return false;
     }
     for (final wall in walls) {
-      if (_circleHitsRect(p, r, wall)) return true;
+      if (_circleHitsRect(p, r, wall)) return false;
     }
-    final other = _other(tank);
-    return (other.position - p).distance < r * 2;
+    return true;
+  }
+
+  /// Whether a shell travelling from [from] to [to] would miss every wall.
+  bool clearShot(Offset from, Offset to) {
+    final delta = to - from;
+    final steps = math.max(1, (delta.distance / 4).ceil());
+    for (var i = 1; i <= steps; i++) {
+      final p = from + delta * (i / steps);
+      for (final wall in walls) {
+        if (wall.inflate(shellRadius).contains(p)) return false;
+      }
+    }
+    return true;
   }
 
   static bool _circleHitsRect(Offset c, double r, Rect rect) {

@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'game.dart';
 
 /// A virtual thumbstick. Reports a vector of length 0–1 in its own local frame
 /// while touched, and [Offset.zero] on release.
@@ -219,5 +222,86 @@ class _HoldButtonState extends State<HoldButton> {
         ),
       ),
     );
+  }
+}
+
+/// Which keyboard keys drive one tank.
+class KeyBindings {
+  const KeyBindings({
+    required this.up,
+    required this.down,
+    required this.left,
+    required this.right,
+    required this.rotateLeft,
+    required this.rotateRight,
+    required this.fire,
+  });
+
+  final List<LogicalKeyboardKey> up;
+  final List<LogicalKeyboardKey> down;
+  final List<LogicalKeyboardKey> left;
+  final List<LogicalKeyboardKey> right;
+  final List<LogicalKeyboardKey> rotateLeft;
+  final List<LogicalKeyboardKey> rotateRight;
+  final List<LogicalKeyboardKey> fire;
+
+  /// Left side of the keyboard.
+  static const red = KeyBindings(
+    up: [LogicalKeyboardKey.keyW],
+    down: [LogicalKeyboardKey.keyS],
+    left: [LogicalKeyboardKey.keyA],
+    right: [LogicalKeyboardKey.keyD],
+    rotateLeft: [LogicalKeyboardKey.keyQ],
+    rotateRight: [LogicalKeyboardKey.keyE],
+    fire: [LogicalKeyboardKey.space],
+  );
+
+  /// Right side of the keyboard.
+  static const blue = KeyBindings(
+    up: [LogicalKeyboardKey.arrowUp],
+    down: [LogicalKeyboardKey.arrowDown],
+    left: [LogicalKeyboardKey.arrowLeft],
+    right: [LogicalKeyboardKey.arrowRight],
+    rotateLeft: [LogicalKeyboardKey.comma],
+    rotateRight: [LogicalKeyboardKey.period],
+    fire: [
+      LogicalKeyboardKey.slash,
+      LogicalKeyboardKey.enter,
+      LogicalKeyboardKey.numpadEnter,
+    ],
+  );
+
+  /// Single player has the whole keyboard, so either set of movement keys
+  /// works.
+  static const solo = KeyBindings(
+    up: [LogicalKeyboardKey.keyW, LogicalKeyboardKey.arrowUp],
+    down: [LogicalKeyboardKey.keyS, LogicalKeyboardKey.arrowDown],
+    left: [LogicalKeyboardKey.keyA, LogicalKeyboardKey.arrowLeft],
+    right: [LogicalKeyboardKey.keyD, LogicalKeyboardKey.arrowRight],
+    rotateLeft: [LogicalKeyboardKey.keyQ],
+    rotateRight: [LogicalKeyboardKey.keyE],
+    fire: [LogicalKeyboardKey.space],
+  );
+
+  bool handles(LogicalKeyboardKey key) => [
+    up,
+    down,
+    left,
+    right,
+    rotateLeft,
+    rotateRight,
+    fire,
+  ].any((keys) => keys.contains(key));
+
+  /// Writes the currently held keys into [controls].
+  void apply(TankControls controls, Set<LogicalKeyboardKey> pressed) {
+    bool held(List<LogicalKeyboardKey> keys) => keys.any(pressed.contains);
+    final x = (held(right) ? 1.0 : 0.0) - (held(left) ? 1.0 : 0.0);
+    final y = (held(down) ? 1.0 : 0.0) - (held(up) ? 1.0 : 0.0);
+    final move = Offset(x, y);
+    controls.keyMove = move == Offset.zero ? move : move / move.distance;
+    controls.keyRotate =
+        (held(rotateRight) ? 1 : 0) - (held(rotateLeft) ? 1 : 0);
+    controls.keyFire = held(fire);
   }
 }
