@@ -8,6 +8,10 @@ abstract class NetLink {
   /// Called once if the other device disconnects or the connection drops.
   abstract void Function()? onClose;
 
+  /// True when messages go through the relay server instead of straight
+  /// between the devices.
+  bool get relayed;
+
   void close();
 }
 
@@ -31,3 +35,6 @@ class NetError implements Exception {
   @override
   String toString() => message;
 }
+
+/// Progress messages while joining, such as switching to the relay.
+typedef StatusCallback = void Function(String status);

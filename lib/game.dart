@@ -208,10 +208,26 @@ class TankGame extends ChangeNotifier {
     };
   }
 
+  // Guest-side smoothing: tanks glide from where they were drawn toward
+  // each new snapshot, and shells keep flying between snapshots.
+  final List<_Pose> _posesFrom = [];
+  final List<_Pose> _posesTo = [];
+  List<Offset> _shellsAt = [];
+  double _sinceSnapshot = 0;
+  double _snapshotGap = 1 / 30;
+
   /// Shows a [toSnapshot] from the host. The guest's game never runs
-  /// [update]; it only mirrors what the host sends.
+  /// [update]; it only mirrors what the host sends, smoothed by
+  /// [updateMirror].
   void applySnapshot(Map<String, Object?> snapshot) {
     double d(Object? v) => (v as num).toDouble();
+
+    // Learn how often snapshots arrive, to pace the gliding.
+    if (_posesTo.isNotEmpty) {
+      _snapshotGap =
+          _snapshotGap * 0.8 + _sinceSnapshot.clamp(0.01, 0.25) * 0.2;
+    }
+    final drawn = [for (final t in tanks) _Pose.of(t)];
 
     final tankData = snapshot['k'] as List;
     for (var i = 0; i < tanks.length; i++) {
@@ -222,6 +238,24 @@ class TankGame extends ChangeNotifier {
         ..hull = d(v[3])
         ..health = d(v[4])
         ..hitFlash = d(v[5]);
+    }
+
+    final target = [for (final t in tanks) _Pose.of(t)];
+    final first = _posesTo.isEmpty;
+    _posesFrom
+      ..clear()
+      ..addAll([
+        for (var i = 0; i < tanks.length; i++)
+          // Jump straight there at the start, or after a respawn.
+          first || (target[i].position - drawn[i].position).distance > 60
+              ? target[i]
+              : drawn[i],
+      ]);
+    _posesTo
+      ..clear()
+      ..addAll(target);
+    for (var i = 0; i < tanks.length; i++) {
+      _posesFrom[i].applyTo(tanks[i]);
     }
 
     shells
@@ -242,11 +276,32 @@ class TankGame extends ChangeNotifier {
           Blast(Offset(d(v[0]), d(v[1])), big: v[3] == 1)..age = d(v[2]),
       ]);
 
+    _shellsAt = [for (final shell in shells) shell.position];
+    _sinceSnapshot = 0;
+
     final over = snapshot['o'] as List?;
     _over = over != null;
     _overTime = over == null ? 0 : d(over[0]);
     final winner = over?[1] as int?;
     _winner = winner == null ? null : Team.values[winner];
+    notifyListeners();
+  }
+
+  /// Advances the guest's mirror between snapshots.
+  void updateMirror(double dt) {
+    if (_posesTo.isEmpty) return;
+    _sinceSnapshot += dt;
+    final t = (_sinceSnapshot / _snapshotGap).clamp(0.0, 1.0);
+    for (var i = 0; i < tanks.length; i++) {
+      _Pose.lerp(_posesFrom[i], _posesTo[i], t).applyTo(tanks[i]);
+    }
+    // Shells fly in straight lines, so they can be moved ahead exactly. Stop
+    // after a short while in case a snapshot is late and the shell has hit
+    // something.
+    final ahead = math.min(_sinceSnapshot, 0.1);
+    for (var i = 0; i < shells.length && i < _shellsAt.length; i++) {
+      shells[i].position = _shellsAt[i] + shells[i].velocity * ahead;
+    }
     notifyListeners();
   }
 
@@ -421,4 +476,28 @@ class TankGame extends ChangeNotifier {
     a %= tau;
     return a > math.pi ? a - tau : a;
   }
+}
+
+/// Where a tank is and which way it faces, for smoothing on the guest.
+class _Pose {
+  const _Pose(this.position, this.aim, this.hull);
+
+  _Pose.of(Tank tank) : this(tank.position, tank.aim, tank.hull);
+
+  final Offset position;
+  final double aim;
+  final double hull;
+
+  void applyTo(Tank tank) {
+    tank
+      ..position = position
+      ..aim = aim
+      ..hull = hull;
+  }
+
+  static _Pose lerp(_Pose a, _Pose b, double t) => _Pose(
+    Offset.lerp(a.position, b.position, t)!,
+    a.aim + TankGame._wrapAngle(b.aim - a.aim) * t,
+    a.hull + TankGame._wrapAngle(b.hull - a.hull) * t,
+  );
 }

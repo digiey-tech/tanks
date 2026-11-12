@@ -28,15 +28,22 @@ class OnlineMatch {
   /// Set when the other device leaves or the connection drops.
   final ValueNotifier<bool> lost = ValueNotifier(false);
 
-  /// About 60 messages a second each way: tiny on a local network.
-  static const double sendInterval = 1 / 60;
+  /// Up to 30 updates a second each way. The guest smooths between them.
+  /// Kept low because, when the network forces the relay, every message
+  /// counts toward its free daily allowance.
+  static const double sendInterval = 1 / 30;
 
-  /// Messages normally arrive every frame, so this much silence means the
-  /// connection is gone (some browsers never report the close).
+  /// When nothing has changed, still send this often so each side knows
+  /// the other is there.
+  static const double keepAliveInterval = 0.5;
+
+  /// This much silence means the connection is gone (some browsers never
+  /// report the close).
   static const double silenceLimit = 5;
 
   double _sinceSent = sendInterval;
   double _sinceHeard = 0;
+  String? _lastSent;
 
   /// Guest: double taps sent so far. Host: double taps received so far. A
   /// counter, so a queued shot is never lost or repeated.
@@ -53,12 +60,21 @@ class OnlineMatch {
       _drop();
       return;
     }
-    if (isHost) game.update(dt);
+    if (isHost) {
+      game.update(dt);
+    } else {
+      game.updateMirror(dt);
+    }
 
     _sinceSent += dt;
     if (_sinceSent < sendInterval * 0.8) return;
+    final message = jsonEncode(isHost ? _snapshot() : _input());
+    // Skip repeats (both tanks still, guest not touching anything) apart
+    // from an occasional keepalive.
+    if (message == _lastSent && _sinceSent < keepAliveInterval) return;
     _sinceSent = 0;
-    link.send(jsonEncode(isHost ? _snapshot() : _input()));
+    _lastSent = message;
+    link.send(message);
   }
 
   /// Double tap: shoot at the current aim point once the gun lines up.
@@ -106,7 +122,8 @@ class OnlineMatch {
       c.fireAtAim = false;
       _shotsAcknowledged = _shots;
     }
-    double r(double v) => (v * 1000).roundToDouble() / 1000;
+    // Coarse enough that tiny thumb jitter doesn't count as a change.
+    double r(double v) => (v * 50).roundToDouble() / 50;
     final aimAt = c.aimAt;
     return {
       't': 'input',

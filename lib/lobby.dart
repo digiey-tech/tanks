@@ -20,7 +20,11 @@ class LobbyScreen extends StatefulWidget {
 
   /// Swappable for tests.
   final Future<peer.PeerHost> Function() hostGame;
-  final Future<peer.NetLink> Function(String code) joinGame;
+  final Future<peer.NetLink> Function(
+    String code, {
+    peer.StatusCallback? onStatus,
+  })
+  joinGame;
 
   @override
   State<LobbyScreen> createState() => _LobbyScreenState();
@@ -32,6 +36,9 @@ class _LobbyScreenState extends State<LobbyScreen> {
   peer.PeerHost? _hosted;
   bool _busy = false;
   String? _error;
+
+  /// Progress while joining, such as switching to the relay.
+  String _status = 'Connecting…';
 
   @override
   void initState() {
@@ -78,9 +85,15 @@ class _LobbyScreenState extends State<LobbyScreen> {
     setState(() {
       _busy = true;
       _error = null;
+      _status = 'Connecting…';
     });
     try {
-      final link = await widget.joinGame(code);
+      final link = await widget.joinGame(
+        code,
+        onStatus: (status) {
+          if (mounted) setState(() => _status = status);
+        },
+      );
       if (!mounted) {
         link.close();
         return;
@@ -207,7 +220,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
       ),
       const SizedBox(height: 16),
       if (_busy)
-        const _Waiting('Connecting…')
+        _Waiting(_status)
       else
         FilledButton(
           onPressed: _join,

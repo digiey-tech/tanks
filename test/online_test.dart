@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -21,6 +22,9 @@ class FakeLink implements NetLink {
 
   @override
   void Function()? onClose;
+
+  @override
+  bool relayed = false;
 
   @override
   void send(String message) {
@@ -77,8 +81,11 @@ void main() {
     // The guest pushes up on its own screen: toward the host's side.
     guest.me.controls.move = const Offset(0, -1);
     run(host, guest, 0.5);
-
     expect(host.game.blue.position.dy, greaterThan(start.dy + 20));
+
+    // Once blue stops, the guest's smoothed view settles on the host's.
+    guest.me.controls.move = Offset.zero;
+    run(host, guest, 0.3);
     expect(guest.game.blue.position, host.game.blue.position);
     expect(guest.game.red.position, host.game.red.position);
   });
@@ -153,6 +160,48 @@ void main() {
     expect(hostLink.closed, isTrue);
   });
 
+  test('sends at most 30 updates a second, and only keepalives when idle', () {
+    final (hostLink, guestLink) = linkPair();
+    final host = OnlineMatch(link: hostLink, isHost: true);
+    final guest = OnlineMatch(link: guestLink, isHost: false);
+
+    // Both moving for a second (before red reaches the wall and stops).
+    host.me.controls.move = const Offset(1, 0);
+    guest.me.controls.move = const Offset(1, 0);
+    run(host, guest, 1);
+    expect(hostLink.sent, inInclusiveRange(28, 31));
+
+    // Nobody touching anything for 4 seconds: just keepalives.
+    host.me.controls.move = Offset.zero;
+    guest.me.controls.move = Offset.zero;
+    run(host, guest, 0.5);
+    hostLink.sent = 0;
+    guestLink.sent = 0;
+    run(host, guest, 4);
+    expect(hostLink.sent, lessThanOrEqualTo(9));
+    expect(guestLink.sent, lessThanOrEqualTo(9));
+    expect(host.lost.value || guest.lost.value, isFalse);
+  });
+
+  test('the guest glides between updates instead of jumping', () {
+    final (host, guest) = matchPair();
+    host.me.controls.move = const Offset(1, 0);
+    run(host, guest, 0.5);
+
+    // Track red on the guest frame by frame: no step should be much bigger
+    // than one frame of driving.
+    var last = guest.game.red.position;
+    var biggest = 0.0;
+    for (var i = 0; i < 60; i++) {
+      run(host, guest, 1 / 60);
+      final now = guest.game.red.position;
+      biggest = math.max(biggest, (now - last).distance);
+      last = now;
+    }
+    expect(biggest, lessThan(TankGame.moveSpeed / 60 * 1.6));
+    expect(biggest, greaterThan(0));
+  });
+
   group('screens', () {
     Future<void> setUp(WidgetTester tester) async {
       tester.view.physicalSize = const Size(393, 760) * 3;
@@ -195,7 +244,7 @@ void main() {
         MaterialApp(
           home: LobbyScreen(
             host: false,
-            joinGame: (code) async {
+            joinGame: (code, {onStatus}) async {
               joinedCode = code;
               return guestLink;
             },

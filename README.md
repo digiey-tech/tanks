@@ -43,16 +43,33 @@ Each hit takes 20 health. The first tank to lose all 100 loses.
 
 ## Online play
 
-Two devices find each other through the free public [PeerJS](https://peerjs.com)
-server using the code, then connect directly (WebRTC), so both need internet
-to connect. On the same Wi-Fi the game traffic stays on the local network.
-Some school and public Wi-Fi networks block direct connections; a phone
-hotspot usually works. PeerJS 1.5.5 is bundled in `web/` (MIT license) and
-only loads when someone picks online play.
+Devices first try to link directly: they find each other through the free
+public [PeerJS](https://peerjs.com) server using the code, then connect
+with WebRTC, so on permissive networks the game traffic goes straight
+between them. PeerJS 1.5.5 is bundled in `web/` (MIT license) and only
+loads when someone picks online play.
 
-The host runs the game and sends its state to the guest about 60 times a
-second; the guest sends its controls back. To check the real connection in a
-browser (needs internet), see the steps at the top of
+Some networks, such as campus Wi-Fi, block direct links. If the joining
+device hasn't connected directly within 4 seconds, it also tries the relay
+in `relay/`: a small Cloudflare Worker that passes messages between the two
+devices over a normal secure WebSocket. Whichever route connects first is
+used, and the game bar shows "Online · relay" when it's the relay.
+
+The relay runs on Cloudflare's free Workers plan, where going over a daily
+limit makes requests fail instead of costing money; limits reset at
+00:00 UTC. To keep within them, the host sends at most 30 updates a second
+and both sides skip messages when nothing has changed. To deploy changes to
+the relay:
+
+```sh
+cd relay
+npm install
+npx wrangler deploy
+```
+
+The host runs the game and sends its state to the guest; the guest sends
+its controls back and smooths movement between updates. To check the real
+connection in a browser (needs internet), see the steps at the top of
 `tool/peer_check/peer_check.dart`.
 
 ## Running locally

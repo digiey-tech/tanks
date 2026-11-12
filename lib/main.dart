@@ -424,7 +424,9 @@ class _GameScreenState extends State<GameScreen>
                 game: game,
                 tank: _opponent,
                 label: _ai != null ? 'CPU' : teamName(_opponent.team),
-                detail: widget.difficulty?.label ?? 'Online',
+                detail:
+                    widget.difficulty?.label ??
+                    (_online!.link.relayed ? 'Online · relay' : 'Online'),
                 onExit: _toMenu,
               ),
             Expanded(

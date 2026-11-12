@@ -6,4 +6,5 @@ const _webOnly = NetError(
 
 Future<PeerHost> hostGame() async => throw _webOnly;
 
-Future<NetLink> joinGame(String code) async => throw _webOnly;
+Future<NetLink> joinGame(String code, {StatusCallback? onStatus}) async =>
+    throw _webOnly;

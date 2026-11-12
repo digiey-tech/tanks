@@ -1,0 +1,12 @@
+{
+  "name": "tanks-relay",
+  "private": true,
+  "description": "Passes Tanks game messages between two devices when they can't connect directly.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.160.1"
+  }
+}
