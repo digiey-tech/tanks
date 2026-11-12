@@ -27,6 +27,10 @@ class TankControls {
   /// normal turning speed. Cleared when the rotate buttons are used.
   Offset? aimAt;
 
+  /// Whether to mark [aimAt] in the arena. On for taps, off for the mouse,
+  /// which already shows a crosshair cursor.
+  bool showAimMarker = false;
+
   bool fire = false;
   bool mouseFire = false;
   bool keyFire = false;
@@ -73,6 +77,9 @@ class Tank {
     health = TankGame.maxHealth;
     cooldown = 0;
     hitFlash = 0;
+    // Forget the last aim point so the gun doesn't swing toward it in the
+    // next round. Held buttons stay as they are, since fingers may be down.
+    controls.aimAt = null;
   }
 }
 

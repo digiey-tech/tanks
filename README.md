@@ -1,11 +1,11 @@
 # Tanks
 
-A tank battle for phones, played in the browser.
+A tank battle for phones and computers, played in the browser.
 
 - **1 Player:** you drive the red tank against a computer-controlled blue
   tank. Pick Easy, Normal or Hard.
-- **2 Players:** share one phone, upright between you. Red plays from the
-  bottom, Blue from the top.
+- **2 Players:** share one phone, upright between you (Red plays from the
+  bottom, Blue from the top), or share one keyboard on a computer.
 
 **Play:** https://digiey-tech.github.io/tanks/
 
@@ -17,6 +17,9 @@ Each player has their own panel:
 - **Rotate buttons** – turn the gun. This only changes where you shoot, not
   how you move.
 - **FIRE** – shoot. Hold to keep firing.
+
+In single player you can also **tap or drag in the arena** to aim: the gun
+turns toward that spot at its normal speed.
 
 ### On a computer
 

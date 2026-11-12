@@ -178,4 +178,61 @@ void main() {
     await mouse.up();
     await mouse.removePointer();
   });
+
+  Future<TankGame> startGame(WidgetTester tester, String button) async {
+    tester.view.physicalSize = const Size(393, 660) * 3;
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+
+    await tester.pumpWidget(const TankApp());
+    await tester.ensureVisible(find.text(button));
+    await tester.tap(find.text(button));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    final state = tester.state<State>(find.byType(GameScreen));
+    return (state as dynamic).game as TankGame;
+  }
+
+  Rect arenaRect(WidgetTester tester) => tester.getRect(
+    find.byWidgetPredicate(
+      (w) => w is CustomPaint && w.painter is ArenaPainter,
+    ),
+  );
+
+  testWidgets('tapping the arena aims in single player', (tester) async {
+    final game = await startGame(tester, '1 Player vs CPU');
+    final red = game.red;
+    final arena = arenaRect(tester);
+
+    // Tap to the right of the red tank, level with it.
+    final scale = arena.width / TankGame.world.width;
+    final target =
+        arena.topLeft + (red.position + const Offset(100, 0)) * scale;
+    final finger = await tester.startGesture(target);
+    expect(red.controls.aimAt, isNotNull);
+    expect(red.controls.showAimMarker, isTrue);
+    await finger.up();
+    expect(game.shells, isEmpty, reason: 'tapping only aims');
+
+    // The gun turns to face the tap (straight right) over the next second.
+    for (var i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(red.aim, closeTo(0, 0.01));
+
+    // Dragging a finger keeps updating the aim.
+    final drag = await tester.startGesture(target);
+    await drag.moveTo(arena.topLeft + const Offset(10, 10));
+    expect(red.controls.aimAt!.dx, lessThan(red.position.dx));
+    await drag.up();
+  });
+
+  testWidgets('tapping the arena does nothing in two-player mode', (
+    tester,
+  ) async {
+    final game = await startGame(tester, '2 Players');
+    await tester.tapAt(arenaRect(tester).topLeft + const Offset(20, 20));
+    expect(game.red.controls.aimAt, isNull);
+    expect(game.blue.controls.aimAt, isNull);
+  });
 }

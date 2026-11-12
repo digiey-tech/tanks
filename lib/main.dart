@@ -136,7 +136,7 @@ class _MenuScreenState extends State<MenuScreen> {
                   ],
                   const SizedBox(height: 28),
                   const Text(
-                    'Two players, one phone',
+                    'Two players, one phone or computer',
                     style: TextStyle(fontSize: 16, color: Colors.white70),
                   ),
                   const SizedBox(height: 10),
@@ -156,7 +156,8 @@ class _MenuScreenState extends State<MenuScreen> {
                     onComputer
                         ? 'Red: WASD, Q/E to aim, Space to fire.\n'
                               'Blue: arrows, , and . to aim, / or Enter to fire.'
-                        : 'Sit facing each other with the phone flat between you.',
+                        : 'Sit facing each other with the phone flat between '
+                              'you, or share a keyboard on a computer.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 13, color: Colors.white54),
                   ),
@@ -208,8 +209,8 @@ class _GameScreenState extends State<GameScreen>
 
   void _toMenu() => Navigator.of(context).pop();
 
-  /// In single player the mouse also aims and fires for the red tank. It's
-  /// off in two-player mode so neither player gets an edge from it.
+  /// In single player the mouse (or a tap in the arena) also aims for the red
+  /// tank. It's off in two-player mode so neither player gets an edge from it.
   TankControls get _mouse => game.red.controls;
 
   final GlobalKey _arenaKey = GlobalKey();
@@ -225,19 +226,37 @@ class _GameScreenState extends State<GameScreen>
       ? KeyEventResult.handled
       : KeyEventResult.ignored;
 
-  /// Points the red tank's gun at the mouse, wherever it is on screen.
-  void _onMouse(PointerEvent event) {
-    if (!_singlePlayer || event.kind != PointerDeviceKind.mouse) return;
+  /// Turns the red tank's gun toward a point on screen.
+  void _aimAt(PointerEvent event, {required bool marker}) {
     final box = _arenaKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return;
     final scale = box.size.width / TankGame.world.width;
-    _mouse.aimAt = box.globalToLocal(event.position) / scale;
+    _mouse
+      ..aimAt = box.globalToLocal(event.position) / scale
+      ..showAimMarker = marker;
+  }
+
+  /// The gun follows the mouse wherever it is on screen.
+  void _onMouse(PointerEvent event) {
+    if (!_singlePlayer || event.kind != PointerDeviceKind.mouse) return;
+    _aimAt(event, marker: false);
   }
 
   void _onArenaPointerDown(PointerDownEvent event) {
-    if (!_singlePlayer || event.kind != PointerDeviceKind.mouse) return;
-    _onMouse(event);
-    if (event.buttons & kPrimaryMouseButton != 0) _mouse.mouseFire = true;
+    if (!_singlePlayer) return;
+    if (event.kind == PointerDeviceKind.mouse) {
+      _onMouse(event);
+      if (event.buttons & kPrimaryMouseButton != 0) _mouse.mouseFire = true;
+    } else {
+      // Tap (or drag) in the arena to aim on a phone.
+      _aimAt(event, marker: true);
+    }
+  }
+
+  void _onArenaPointerMove(PointerMoveEvent event) {
+    // Mouse moves are already handled by the screen-wide listener.
+    if (!_singlePlayer || event.kind == PointerDeviceKind.mouse) return;
+    _aimAt(event, marker: true);
   }
 
   void _onArenaPointerUp(PointerEvent event) {
@@ -310,6 +329,7 @@ class _GameScreenState extends State<GameScreen>
               child: Listener(
                 behavior: HitTestBehavior.opaque,
                 onPointerDown: _onArenaPointerDown,
+                onPointerMove: _onArenaPointerMove,
                 onPointerUp: _onArenaPointerUp,
                 onPointerCancel: _onArenaPointerUp,
                 child: MouseRegion(
@@ -625,6 +645,12 @@ class ArenaPainter extends CustomPainter {
       canvas.drawRRect(r.deflate(1), wallEdge);
     }
 
+    final aim = game.red.controls;
+    final aimAt = aim.aimAt;
+    if (aim.showAimMarker && aimAt != null && game.red.alive) {
+      _paintAimMarker(canvas, aimAt);
+    }
+
     for (final tank in game.tanks) {
       _paintTank(canvas, tank);
     }
@@ -656,6 +682,24 @@ class ArenaPainter extends CustomPainter {
         radius * 0.5,
         Paint()..color = Colors.yellow.withValues(alpha: (1 - t) * 0.9),
       );
+    }
+  }
+
+  /// A small target where the player tapped, so they can see what the gun is
+  /// turning toward.
+  void _paintAimMarker(Canvas canvas, Offset at) {
+    final paint = Paint()
+      ..color = redColor.withValues(alpha: 0.7)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+    canvas.drawCircle(at, 7, paint);
+    for (final d in const [
+      Offset(1, 0),
+      Offset(-1, 0),
+      Offset(0, 1),
+      Offset(0, -1),
+    ]) {
+      canvas.drawLine(at + d * 4, at + d * 10, paint);
     }
   }
 
