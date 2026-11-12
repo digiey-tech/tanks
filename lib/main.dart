@@ -9,6 +9,8 @@ import 'package:flutter/services.dart';
 import 'ai.dart';
 import 'controls.dart';
 import 'game.dart';
+import 'lobby.dart';
+import 'online.dart';
 
 void main() {
   runApp(const TankApp());
@@ -64,9 +66,20 @@ class _MenuScreenState extends State<MenuScreen> {
     );
   }
 
+  void _openLobby({required bool host}) {
+    Navigator.of(context)
+        .push(MaterialPageRoute<void>(builder: (_) => LobbyScreen(host: host)));
+  }
+
   @override
   Widget build(BuildContext context) {
     const buttonText = TextStyle(fontSize: 20, fontWeight: FontWeight.w800);
+    final lobbyButton = OutlinedButton.styleFrom(
+      foregroundColor: Colors.white,
+      side: const BorderSide(color: Colors.white38),
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+    );
     return Scaffold(
       backgroundColor: const Color(0xFF15181C),
       body: SafeArea(
@@ -161,6 +174,40 @@ class _MenuScreenState extends State<MenuScreen> {
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 13, color: Colors.white54),
                   ),
+                  const SizedBox(height: 28),
+                  const Text(
+                    'Two devices',
+                    style: TextStyle(fontSize: 16, color: Colors.white70),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _openLobby(host: true),
+                          style: lobbyButton,
+                          icon: const Icon(Icons.wifi_tethering),
+                          label: const Text('Host'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _openLobby(host: false),
+                          style: lobbyButton,
+                          icon: const Icon(Icons.login),
+                          label: const Text('Join'),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'One player hosts and shares a code. Both need internet '
+                    'to connect; it plays best on the same Wi-Fi.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: Colors.white54),
+                  ),
                 ],
               ),
             ),
@@ -172,10 +219,15 @@ class _MenuScreenState extends State<MenuScreen> {
 }
 
 class GameScreen extends StatefulWidget {
-  /// A null [difficulty] means two human players.
-  const GameScreen({super.key, this.difficulty});
+  /// With neither [difficulty] nor [online], two people share this device.
+  const GameScreen({super.key, this.difficulty, this.online})
+    : assert(difficulty == null || online == null);
 
+  /// Single player against the computer.
   final Difficulty? difficulty;
+
+  /// A battle against another device.
+  final OnlineMatch? online;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -183,14 +235,25 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen>
     with SingleTickerProviderStateMixin {
-  final TankGame game = TankGame();
+  late final TankGame game = widget.online?.game ?? TankGame();
   late final Ticker _ticker;
   Duration _last = Duration.zero;
 
   /// Drives the blue tank in single-player mode.
   TankAi? _ai;
 
-  bool get _singlePlayer => _ai != null;
+  OnlineMatch? get _online => widget.online;
+
+  /// Two people sharing this one device.
+  bool get _sharedScreen => _ai == null && _online == null;
+
+  /// The tank this device's player drives when only one person uses it.
+  Tank get _me => _online?.me ?? game.red;
+  Tank get _opponent => _online?.opponent ?? game.blue;
+
+  /// The guest in online play sees the arena turned around, so their own tank
+  /// is at the bottom like the host's is.
+  bool get _viewFlipped => _online != null && !_online!.isHost;
 
   @override
   void initState() {
@@ -203,21 +266,27 @@ class _GameScreenState extends State<GameScreen>
   }
 
   void _rematch() {
+    final online = _online;
+    if (online != null) {
+      online.rematch();
+      return;
+    }
     game.reset();
     _ai?.reset();
   }
 
   void _toMenu() => Navigator.of(context).pop();
 
-  /// In single player the mouse (or a tap in the arena) also aims for the red
-  /// tank. It's off in two-player mode so neither player gets an edge from it.
-  TankControls get _mouse => game.red.controls;
+  /// When one person uses this device, the mouse (or a tap in the arena) also
+  /// aims their tank. It's off when two people share the device so neither
+  /// gets an edge from it.
+  TankControls get _mouse => _me.controls;
 
   final GlobalKey _arenaKey = GlobalKey();
 
-  late final Map<Tank, KeyBindings> _keys = _singlePlayer
-      ? {game.red: KeyBindings.solo}
-      : {game.red: KeyBindings.red, game.blue: KeyBindings.blue};
+  late final Map<Tank, KeyBindings> _keys = _sharedScreen
+      ? {game.red: KeyBindings.red, game.blue: KeyBindings.blue}
+      : {_me: KeyBindings.solo};
 
   /// Claims game keys so they don't also move focus or press the screen's
   /// buttons (Space and Enter would otherwise activate a focused button).
@@ -238,12 +307,12 @@ class _GameScreenState extends State<GameScreen>
 
   /// The gun follows the mouse wherever it is on screen.
   void _onMouse(PointerEvent event) {
-    if (!_singlePlayer || event.kind != PointerDeviceKind.mouse) return;
+    if (_sharedScreen || event.kind != PointerDeviceKind.mouse) return;
     _aimAt(event, marker: false);
   }
 
   void _onArenaPointerDown(PointerDownEvent event) {
-    if (!_singlePlayer) return;
+    if (_sharedScreen) return;
     if (event.kind == PointerDeviceKind.mouse) {
       _onMouse(event);
       if (event.buttons & kPrimaryMouseButton != 0) _mouse.mouseFire = true;
@@ -254,7 +323,11 @@ class _GameScreenState extends State<GameScreen>
       if (last != null &&
           event.timeStamp - last.time <= kDoubleTapTimeout &&
           (event.position - last.position).distance <= _doubleTapSlop) {
-        _mouse.fireAtAim = true;
+        if (_online case final online?) {
+          online.queueShot();
+        } else {
+          _mouse.fireAtAim = true;
+        }
         // Start over, so each shot takes its own pair of taps.
         _lastTap = null;
       } else {
@@ -271,7 +344,7 @@ class _GameScreenState extends State<GameScreen>
 
   void _onArenaPointerMove(PointerMoveEvent event) {
     // Mouse moves are already handled by the screen-wide listener.
-    if (!_singlePlayer || event.kind == PointerDeviceKind.mouse) return;
+    if (_sharedScreen || event.kind == PointerDeviceKind.mouse) return;
     _aimAt(event, marker: true);
   }
 
@@ -287,14 +360,27 @@ class _GameScreenState extends State<GameScreen>
     final step = dt.clamp(0.0, 0.05);
     final pressed = HardwareKeyboard.instance.logicalKeysPressed;
     _keys.forEach((tank, keys) => keys.apply(tank.controls, pressed));
-    _ai?.update(step);
-    game.update(step);
+    // Arrow keys follow the screen, which the guest sees upside down.
+    if (_viewFlipped) _me.controls.keyMove = -_me.controls.keyMove;
+
+    final online = _online;
+    if (online != null) {
+      online.tick(step);
+    } else {
+      _ai?.update(step);
+      game.update(step);
+    }
   }
 
   @override
   void dispose() {
     _ticker.dispose();
-    game.dispose();
+    final online = _online;
+    if (online != null) {
+      online.dispose();
+    } else {
+      game.dispose();
+    }
     super.dispose();
   }
 
@@ -327,17 +413,19 @@ class _GameScreenState extends State<GameScreen>
       children: [
         Column(
           children: [
-            if (_singlePlayer)
-              _CpuBar(
-                game: game,
-                difficulty: widget.difficulty!,
-                onExit: _toMenu,
-              )
-            else
+            if (_sharedScreen)
               // Blue sits across from Red, so their controls face them.
               RotatedBox(
                 quarterTurns: 2,
                 child: ControlPanel(game: game, tank: game.blue),
+              )
+            else
+              _OpponentBar(
+                game: game,
+                tank: _opponent,
+                label: _ai != null ? 'CPU' : teamName(_opponent.team),
+                detail: widget.difficulty?.label ?? 'Online',
+                onExit: _toMenu,
               ),
             Expanded(
               // Clicking anywhere in the arena area fires; clicks on the
@@ -349,9 +437,9 @@ class _GameScreenState extends State<GameScreen>
                 onPointerUp: _onArenaPointerUp,
                 onPointerCancel: _onArenaPointerUp,
                 child: MouseRegion(
-                  cursor: _singlePlayer
-                      ? SystemMouseCursors.precise
-                      : MouseCursor.defer,
+                  cursor: _sharedScreen
+                      ? MouseCursor.defer
+                      : SystemMouseCursors.precise,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 6,
@@ -368,10 +456,13 @@ class _GameScreenState extends State<GameScreen>
                           ),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(4),
-                            child: CustomPaint(
-                              key: _arenaKey,
-                              painter: ArenaPainter(game),
-                              child: const SizedBox.expand(),
+                            child: RotatedBox(
+                              quarterTurns: _viewFlipped ? 2 : 0,
+                              child: CustomPaint(
+                                key: _arenaKey,
+                                painter: ArenaPainter(game, me: _me),
+                                child: const SizedBox.expand(),
+                              ),
                             ),
                           ),
                         ),
@@ -383,8 +474,8 @@ class _GameScreenState extends State<GameScreen>
             ),
             ControlPanel(
               game: game,
-              tank: game.red,
-              label: _singlePlayer ? 'YOU' : null,
+              tank: _me,
+              label: _sharedScreen ? null : 'YOU',
             ),
           ],
         ),
@@ -393,27 +484,88 @@ class _GameScreenState extends State<GameScreen>
           builder: (context, _) => game.showResult
               ? ResultOverlay(
                   game: game,
-                  difficulty: widget.difficulty,
+                  viewer: _sharedScreen ? null : _me.team,
+                  opponentLabel: _ai != null ? 'CPU' : teamName(_opponent.team),
+                  winSubtitle: switch (widget.difficulty) {
+                    final d? => 'You beat the ${d.label} CPU',
+                    null => 'You won the online battle',
+                  },
                   onRematch: _rematch,
                   onMenu: _toMenu,
                 )
               : const SizedBox.shrink(),
         ),
+        if (_online case final online?)
+          ValueListenableBuilder(
+            valueListenable: online.lost,
+            builder: (context, lost, _) => lost
+                ? _ConnectionLost(onMenu: _toMenu)
+                : const SizedBox.shrink(),
+          ),
       ],
     );
   }
 }
 
-/// Top strip in single-player mode: the computer's health and a way out.
-class _CpuBar extends StatelessWidget {
-  const _CpuBar({
+/// Shown over the game when the other device leaves or the connection drops.
+class _ConnectionLost extends StatelessWidget {
+  const _ConnectionLost({required this.onMenu});
+
+  final VoidCallback onMenu;
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: Colors.black.withValues(alpha: 0.8),
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.wifi_off, size: 48, color: Colors.white70),
+              const SizedBox(height: 12),
+              const Text(
+                'Connection lost',
+                style: TextStyle(fontSize: 28, fontWeight: FontWeight.w900),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'The other player left, or the connection dropped.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16, color: Colors.white70),
+              ),
+              const SizedBox(height: 24),
+              FilledButton.icon(
+                onPressed: onMenu,
+                icon: const Icon(Icons.home),
+                label: const Text('Menu'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Top strip when one person uses this device: the opponent's health and a
+/// way back to the menu.
+class _OpponentBar extends StatelessWidget {
+  const _OpponentBar({
     required this.game,
-    required this.difficulty,
+    required this.tank,
+    required this.label,
+    required this.detail,
     required this.onExit,
   });
 
   final TankGame game;
-  final Difficulty difficulty;
+  final Tank tank;
+  final String label;
+
+  /// Small text on the right, such as the difficulty.
+  final String detail;
   final VoidCallback onExit;
 
   @override
@@ -424,8 +576,8 @@ class _CpuBar extends StatelessWidget {
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [
-            blueColor.withValues(alpha: 0.28),
-            blueColor.withValues(alpha: 0.08),
+            teamColor(tank.team).withValues(alpha: 0.28),
+            teamColor(tank.team).withValues(alpha: 0.08),
           ],
         ),
       ),
@@ -438,11 +590,11 @@ class _CpuBar extends StatelessWidget {
             icon: const Icon(Icons.close),
           ),
           Expanded(
-            child: HealthBar(game: game, tank: game.blue, label: 'CPU'),
+            child: HealthBar(game: game, tank: tank, label: label),
           ),
           const SizedBox(width: 8),
           Text(
-            difficulty.label,
+            detail,
             style: const TextStyle(fontSize: 13, color: Colors.white60),
           ),
         ],
@@ -621,9 +773,12 @@ class HealthBar extends StatelessWidget {
 }
 
 class ArenaPainter extends CustomPainter {
-  ArenaPainter(this.game) : super(repaint: game);
+  ArenaPainter(this.game, {required this.me}) : super(repaint: game);
 
   final TankGame game;
+
+  /// The tank this device controls, whose tap target is shown.
+  final Tank me;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -661,9 +816,9 @@ class ArenaPainter extends CustomPainter {
       canvas.drawRRect(r.deflate(1), wallEdge);
     }
 
-    final aim = game.red.controls;
+    final aim = me.controls;
     final aimAt = aim.aimAt;
-    if (aim.showAimMarker && aimAt != null && game.red.alive) {
+    if (aim.showAimMarker && aimAt != null && me.alive) {
       _paintAimMarker(canvas, aimAt, shotQueued: aim.fireAtAim);
     }
 
@@ -802,28 +957,34 @@ class ArenaPainter extends CustomPainter {
   bool shouldRepaint(ArenaPainter oldDelegate) => oldDelegate.game != game;
 }
 
-/// Winner screen. In two-player mode it is split so each player reads their
-/// half the right way up.
+/// Winner screen. When two people share the device it is split so each
+/// player reads their half the right way up.
 class ResultOverlay extends StatelessWidget {
   const ResultOverlay({
     super.key,
     required this.game,
-    required this.difficulty,
+    required this.viewer,
+    required this.opponentLabel,
+    required this.winSubtitle,
     required this.onRematch,
     required this.onMenu,
   });
 
   final TankGame game;
 
-  /// Null in two-player mode.
-  final Difficulty? difficulty;
+  /// The team of the one person using this device; null when two share it.
+  final Team? viewer;
+
+  /// Who "they" are, such as CPU.
+  final String opponentLabel;
+  final String winSubtitle;
   final VoidCallback onRematch;
   final VoidCallback onMenu;
 
   @override
   Widget build(BuildContext context) {
     final winner = game.winner;
-    final difficulty = this.difficulty;
+    final viewer = this.viewer;
     final buttons = Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
@@ -864,22 +1025,22 @@ class ResultOverlay extends StatelessWidget {
 
     return ColoredBox(
       color: Colors.black.withValues(alpha: 0.72),
-      child: difficulty != null
+      child: viewer != null
           ? Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   _ResultText(
-                    title: switch (winner) {
-                      Team.red => 'YOU WIN!',
-                      Team.blue => 'CPU WINS',
-                      null => 'DRAW',
-                    },
-                    subtitle: switch (winner) {
-                      Team.red => 'You beat the ${difficulty.label} CPU',
-                      Team.blue => 'Try again?',
-                      null => 'Both tanks destroyed',
-                    },
+                    title: winner == null
+                        ? 'DRAW'
+                        : winner == viewer
+                        ? 'YOU WIN!'
+                        : '$opponentLabel WINS',
+                    subtitle: winner == null
+                        ? 'Both tanks destroyed'
+                        : winner == viewer
+                        ? winSubtitle
+                        : 'Try again?',
                     color: winner == null ? Colors.white : teamColor(winner),
                   ),
                   const SizedBox(height: 20),

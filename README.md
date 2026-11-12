@@ -6,6 +6,9 @@ A tank battle for phones and computers, played in the browser.
   tank. Pick Easy, Normal or Hard.
 - **2 Players:** share one phone, upright between you (Red plays from the
   bottom, Blue from the top), or share one keyboard on a computer.
+- **Two devices:** one player taps **Host** and gets a 4-digit code; the
+  other taps **Join** and enters it. Each player sees their own tank at the
+  bottom of their screen.
 
 **Play:** https://digiey-tech.github.io/tanks/
 
@@ -37,6 +40,20 @@ edge):
 | Blue | Arrow keys | , / . | / or Enter |
 
 Each hit takes 20 health. The first tank to lose all 100 loses.
+
+## Online play
+
+Two devices find each other through the free public [PeerJS](https://peerjs.com)
+server using the code, then connect directly (WebRTC), so both need internet
+to connect. On the same Wi-Fi the game traffic stays on the local network.
+Some school and public Wi-Fi networks block direct connections; a phone
+hotspot usually works. PeerJS 1.5.5 is bundled in `web/` (MIT license) and
+only loads when someone picks online play.
+
+The host runs the game and sends its state to the guest about 60 times a
+second; the guest sends its controls back. To check the real connection in a
+browser (needs internet), see the steps at the top of
+`tool/peer_check/peer_check.dart`.
 
 ## Running locally
 

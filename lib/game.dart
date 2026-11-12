@@ -173,6 +173,83 @@ class TankGame extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Everything another device needs to draw the battle, as JSON-friendly
+  /// values. Used by the host in online play.
+  Map<String, Object?> toSnapshot() {
+    double r(double v) => (v * 100).roundToDouble() / 100;
+    double angle(double v) => (v * 1000).roundToDouble() / 1000;
+    return {
+      'k': [
+        for (final t in tanks)
+          [
+            r(t.position.dx),
+            r(t.position.dy),
+            angle(t.aim),
+            angle(t.hull),
+            t.health,
+            r(t.hitFlash),
+          ],
+      ],
+      's': [
+        for (final s in shells)
+          [
+            r(s.position.dx),
+            r(s.position.dy),
+            r(s.velocity.dx),
+            r(s.velocity.dy),
+            s.owner.index,
+          ],
+      ],
+      'b': [
+        for (final b in blasts)
+          [r(b.position.dx), r(b.position.dy), r(b.age), b.big ? 1 : 0],
+      ],
+      'o': _over ? [r(_overTime), _winner?.index] : null,
+    };
+  }
+
+  /// Shows a [toSnapshot] from the host. The guest's game never runs
+  /// [update]; it only mirrors what the host sends.
+  void applySnapshot(Map<String, Object?> snapshot) {
+    double d(Object? v) => (v as num).toDouble();
+
+    final tankData = snapshot['k'] as List;
+    for (var i = 0; i < tanks.length; i++) {
+      final v = tankData[i] as List;
+      tanks[i]
+        ..position = Offset(d(v[0]), d(v[1]))
+        ..aim = d(v[2])
+        ..hull = d(v[3])
+        ..health = d(v[4])
+        ..hitFlash = d(v[5]);
+    }
+
+    shells
+      ..clear()
+      ..addAll([
+        for (final v in (snapshot['s'] as List).cast<List>())
+          Shell(
+            Offset(d(v[0]), d(v[1])),
+            Offset(d(v[2]), d(v[3])),
+            Team.values[v[4] as int],
+          ),
+      ]);
+
+    blasts
+      ..clear()
+      ..addAll([
+        for (final v in (snapshot['b'] as List).cast<List>())
+          Blast(Offset(d(v[0]), d(v[1])), big: v[3] == 1)..age = d(v[2]),
+      ]);
+
+    final over = snapshot['o'] as List?;
+    _over = over != null;
+    _overTime = over == null ? 0 : d(over[0]);
+    final winner = over?[1] as int?;
+    _winner = winner == null ? null : Team.values[winner];
+    notifyListeners();
+  }
+
   void update(double dt) {
     if (_over) {
       _overTime += dt;
