@@ -204,7 +204,12 @@ class TankGame extends ChangeNotifier {
         for (final b in blasts)
           [r(b.position.dx), r(b.position.dy), r(b.age), b.big ? 1 : 0],
       ],
-      'o': _over ? [r(_overTime), _winner?.index] : null,
+      // The timer only matters until the result screen shows. Stopping it
+      // there keeps snapshots identical, so the host can skip sending them
+      // while players sit on the result screen.
+      'o': _over
+          ? [r(math.min(_overTime, resultDelay)), _winner?.index]
+          : null,
     };
   }
 

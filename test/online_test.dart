@@ -183,6 +183,23 @@ void main() {
     expect(host.lost.value || guest.lost.value, isFalse);
   });
 
+  test('the result screen only costs keepalives', () {
+    final (hostLink, guestLink) = linkPair();
+    final host = OnlineMatch(link: hostLink, isHost: true);
+    final guest = OnlineMatch(link: guestLink, isHost: false);
+    host.game.blue.health = 0;
+    run(host, guest, 2);
+    expect(guest.game.showResult, isTrue);
+
+    // Ten seconds sitting on the result screen.
+    hostLink.sent = 0;
+    guestLink.sent = 0;
+    run(host, guest, 10);
+    expect(hostLink.sent, lessThanOrEqualTo(21));
+    expect(guestLink.sent, lessThanOrEqualTo(21));
+    expect(guest.game.showResult, isTrue);
+  });
+
   test('the guest glides between updates instead of jumping', () {
     final (host, guest) = matchPair();
     host.me.controls.move = const Offset(1, 0);
