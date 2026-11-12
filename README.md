@@ -19,7 +19,8 @@ Each player has their own panel:
 - **FIRE** – shoot. Hold to keep firing.
 
 In single player you can also **tap or drag in the arena** to aim: the gun
-turns toward that spot at its normal speed.
+turns toward that spot at its normal speed. **Double tap** to shoot there: the
+gun turns to face the spot and fires as soon as it's lined up and reloaded.
 
 ### On a computer
 

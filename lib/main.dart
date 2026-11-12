@@ -248,10 +248,26 @@ class _GameScreenState extends State<GameScreen>
       _onMouse(event);
       if (event.buttons & kPrimaryMouseButton != 0) _mouse.mouseFire = true;
     } else {
-      // Tap (or drag) in the arena to aim on a phone.
+      // Tap (or drag) in the arena to aim on a phone; double tap to shoot.
       _aimAt(event, marker: true);
+      final last = _lastTap;
+      if (last != null &&
+          event.timeStamp - last.time <= kDoubleTapTimeout &&
+          (event.position - last.position).distance <= _doubleTapSlop) {
+        _mouse.fireAtAim = true;
+        // Start over, so each shot takes its own pair of taps.
+        _lastTap = null;
+      } else {
+        _lastTap = (time: event.timeStamp, position: event.position);
+      }
     }
   }
+
+  /// How far apart, in screen points, two taps can be and still count as a
+  /// double tap.
+  static const double _doubleTapSlop = 40;
+
+  ({Duration time, Offset position})? _lastTap;
 
   void _onArenaPointerMove(PointerMoveEvent event) {
     // Mouse moves are already handled by the screen-wide listener.
@@ -648,7 +664,7 @@ class ArenaPainter extends CustomPainter {
     final aim = game.red.controls;
     final aimAt = aim.aimAt;
     if (aim.showAimMarker && aimAt != null && game.red.alive) {
-      _paintAimMarker(canvas, aimAt);
+      _paintAimMarker(canvas, aimAt, shotQueued: aim.fireAtAim);
     }
 
     for (final tank in game.tanks) {
@@ -687,7 +703,7 @@ class ArenaPainter extends CustomPainter {
 
   /// A small target where the player tapped, so they can see what the gun is
   /// turning toward.
-  void _paintAimMarker(Canvas canvas, Offset at) {
+  void _paintAimMarker(Canvas canvas, Offset at, {required bool shotQueued}) {
     final paint = Paint()
       ..color = redColor.withValues(alpha: 0.7)
       ..style = PaintingStyle.stroke
@@ -700,6 +716,9 @@ class ArenaPainter extends CustomPainter {
       Offset(0, -1),
     ]) {
       canvas.drawLine(at + d * 4, at + d * 10, paint);
+    }
+    if (shotQueued) {
+      canvas.drawCircle(at, 3.5, Paint()..color = redColor);
     }
   }
 

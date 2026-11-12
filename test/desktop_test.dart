@@ -235,4 +235,76 @@ void main() {
     expect(game.red.controls.aimAt, isNull);
     expect(game.blue.controls.aimAt, isNull);
   });
+
+  test('a queued shot waits until the gun faces the target', () {
+    final game = TankGame();
+    final red = game.red;
+    // Red aims straight up; queue a shot at a point to its right.
+    red.controls
+      ..aimAt = red.position + const Offset(100, 0)
+      ..fireAtAim = true;
+    game.update(1 / 60);
+    expect(game.shells, isEmpty);
+
+    for (var i = 0; i < 60 && game.shells.isEmpty; i++) {
+      game.update(1 / 60);
+    }
+    expect(game.shells, hasLength(1));
+    final v = game.shells.single.velocity;
+    expect(v.dx, greaterThan(0));
+    expect(v.dy.abs(), lessThan(1e-6));
+    expect(red.controls.fireAtAim, isFalse);
+  });
+
+  test('rotate buttons cancel a queued shot', () {
+    final game = TankGame();
+    final red = game.red;
+    red.controls
+      ..aimAt = red.position + const Offset(100, 0)
+      ..fireAtAim = true
+      ..rotateLeft = true;
+    game.update(1 / 60);
+    red.controls.rotateLeft = false;
+    for (var i = 0; i < 60; i++) {
+      game.update(1 / 60);
+    }
+    expect(game.shells, isEmpty);
+  });
+
+  testWidgets('double tapping the arena shoots there in single player', (
+    tester,
+  ) async {
+    final game = await startGame(tester, '1 Player vs CPU');
+    final red = game.red;
+    final arena = arenaRect(tester);
+    final scale = arena.width / TankGame.world.width;
+    final target =
+        arena.topLeft + (red.position + const Offset(100, 0)) * scale;
+
+    final finger = await tester.createGesture();
+    await finger.down(target, timeStamp: const Duration(milliseconds: 1000));
+    await finger.up(timeStamp: const Duration(milliseconds: 1080));
+    await finger.down(target, timeStamp: const Duration(milliseconds: 1160));
+    await finger.up(timeStamp: const Duration(milliseconds: 1240));
+    expect(red.controls.fireAtAim, isTrue);
+
+    Iterable<Shell> redShells() =>
+        game.shells.where((s) => s.owner == Team.red);
+    for (var i = 0; i < 90 && redShells().isEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(redShells(), hasLength(1));
+    expect(redShells().single.velocity.dx, greaterThan(0));
+  });
+
+  testWidgets('two slow taps only aim', (tester) async {
+    final game = await startGame(tester, '1 Player vs CPU');
+    final target = arenaRect(tester).center;
+    final finger = await tester.createGesture();
+    await finger.down(target, timeStamp: const Duration(milliseconds: 1000));
+    await finger.up(timeStamp: const Duration(milliseconds: 1080));
+    await finger.down(target, timeStamp: const Duration(milliseconds: 1600));
+    await finger.up(timeStamp: const Duration(milliseconds: 1680));
+    expect(game.red.controls.fireAtAim, isFalse);
+  });
 }

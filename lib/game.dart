@@ -31,6 +31,10 @@ class TankControls {
   /// which already shows a crosshair cursor.
   bool showAimMarker = false;
 
+  /// A queued shot at [aimAt] (from a double tap). It fires once the gun is
+  /// facing [aimAt] and reloaded, so the shell goes where the player tapped.
+  bool fireAtAim = false;
+
   bool fire = false;
   bool mouseFire = false;
   bool keyFire = false;
@@ -80,6 +84,7 @@ class Tank {
     // Forget the last aim point so the gun doesn't swing toward it in the
     // next round. Held buttons stay as they are, since fingers may be down.
     controls.aimAt = null;
+    controls.fireAtAim = false;
   }
 }
 
@@ -200,14 +205,17 @@ class TankGame extends ChangeNotifier {
                 controls.keyRotate)
             .clamp(-1, 1);
     final aimAt = controls.aimAt;
+    var onTarget = false;
     if (turn != 0) {
       controls.aimAt = null;
+      controls.fireAtAim = false;
       tank.aim = _wrapAngle(tank.aim + turn * rotateSpeed * dt);
     } else if (aimAt != null && aimAt != tank.position) {
       final toAim = aimAt - tank.position;
       final diff = _wrapAngle(math.atan2(toAim.dy, toAim.dx) - tank.aim);
       final step = rotateSpeed * dt;
       tank.aim = _wrapAngle(tank.aim + diff.clamp(-step, step));
+      onTarget = diff.abs() <= step;
     }
 
     var input =
@@ -222,9 +230,11 @@ class TankGame extends ChangeNotifier {
       tank.hull = math.atan2(velocity.dy, velocity.dx);
     }
 
-    if ((controls.fire || controls.mouseFire || controls.keyFire) &&
-        tank.cooldown <= 0) {
+    final held = controls.fire || controls.mouseFire || controls.keyFire;
+    final queued = controls.fireAtAim && onTarget;
+    if ((held || queued) && tank.cooldown <= 0) {
       fire(tank);
+      controls.fireAtAim = false;
     }
   }
 
