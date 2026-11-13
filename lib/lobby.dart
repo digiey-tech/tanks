@@ -11,12 +11,17 @@ class LobbyScreen extends StatefulWidget {
   const LobbyScreen({
     super.key,
     required this.host,
+    this.powerUps = false,
     this.hostGame = peer.hostGame,
     this.joinGame = peer.joinGame,
   });
 
   /// True to host a game, false to join one.
   final bool host;
+
+  /// When hosting, whether to play with power-ups. A joining device uses
+  /// the host's setting.
+  final bool powerUps;
 
   /// Swappable for tests.
   final Future<peer.PeerHost> Function() hostGame;
@@ -70,7 +75,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
         link.close();
         return;
       }
-      _start(OnlineMatch(link: link, isHost: true));
+      _start(OnlineMatch(link: link, isHost: true, powerUps: widget.powerUps));
     } on peer.NetError catch (e) {
       if (mounted) _fail(e.message);
     }

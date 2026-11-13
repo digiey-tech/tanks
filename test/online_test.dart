@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:tanks/game.dart';
 import 'package:tanks/lobby.dart';
 import 'package:tanks/main.dart';
+import 'package:tanks/maps.dart';
 import 'package:tanks/net.dart';
 import 'package:tanks/online.dart';
 
@@ -55,12 +57,12 @@ class FakeLink implements NetLink {
   return (a, b);
 }
 
+/// A host and guest with the first round started (the host's pick).
 (OnlineMatch, OnlineMatch) matchPair() {
   final (hostLink, guestLink) = linkPair();
-  return (
-    OnlineMatch(link: hostLink, isHost: true),
-    OnlineMatch(link: guestLink, isHost: false),
-  );
+  final host = OnlineMatch(link: hostLink, isHost: true)
+    ..pickMap(GameMap.classic);
+  return (host, OnlineMatch(link: guestLink, isHost: false));
 }
 
 void run(OnlineMatch host, OnlineMatch guest, double seconds) {
@@ -128,19 +130,109 @@ void main() {
     expect(guest.me.controls.fireAtAim, isFalse);
   });
 
-  test('the guest can ask for a rematch', () {
-    final (host, guest) = matchPair();
+  test('players take turns picking the map, host first', () {
+    final (hostLink, guestLink) = linkPair();
+    final host = OnlineMatch(link: hostLink, isHost: true);
+    final guest = OnlineMatch(link: guestLink, isHost: false);
+    run(host, guest, 0.1);
+    expect(host.picker.value, Team.red);
+    expect(guest.picker.value, Team.red);
+
+    // Round 1: only the host can pick, and nothing moves until it does.
+    guest.pickMap(GameMap.zigzag);
+    host.me.controls.move = const Offset(1, 0);
+    run(host, guest, 0.3);
+    expect(host.picker.value, Team.red);
+    expect(host.game.red.position, host.game.red.spawn);
+    host.me.controls.move = Offset.zero;
+    host.pickMap(GameMap.pillars);
+    run(host, guest, 0.1);
+    expect(guest.picker.value, isNull);
+    expect(guest.game.map, same(GameMap.pillars));
+
+    // The guest can move the game on after the round.
     host.game.red.health = 0;
     guest.me.controls.aimAt = const Offset(10, 10);
     run(host, guest, 1.5);
     expect(guest.game.showResult, isTrue);
-
-    guest.rematch();
+    guest.nextRound();
     run(host, guest, 0.1);
-    expect(host.game.isOver, isFalse);
-    expect(guest.game.isOver, isFalse);
+
+    // Round 2: the guest's pick.
+    expect(host.picker.value, Team.blue);
+    expect(guest.picker.value, Team.blue);
+    host.pickMap(GameMap.classic);
+    run(host, guest, 0.1);
+    expect(host.picker.value, Team.blue, reason: 'not the host\'s turn');
+    guest.pickMap(GameMap.zigzag);
+    run(host, guest, 0.1);
+    expect(host.game.map, same(GameMap.zigzag));
+    expect(guest.game.map, same(GameMap.zigzag));
+    expect(guest.picker.value, isNull);
     expect(guest.game.red.health, TankGame.maxHealth);
     expect(guest.me.controls.aimAt, isNull);
+
+    // Round 3: back to the host.
+    host.game.blue.health = 0;
+    run(host, guest, 1.5);
+    host.nextRound();
+    run(host, guest, 0.1);
+    expect(guest.picker.value, Team.red);
+  });
+
+  test("playing again is the chooser's pick, and turns alternate", () {
+    final (host, guest) = matchPair(); // Round 1: the host picked Classic.
+    void finishRound() {
+      host.game.blue.health = 0;
+      run(host, guest, 1.5);
+    }
+
+    // After round 1 it's the guest's turn: the host can't choose.
+    finishRound();
+    expect(guest.myTurnNext, isTrue);
+    expect(host.myTurnNext, isFalse);
+    host.playAgain();
+    host.nextRound();
+    run(host, guest, 0.1);
+    expect(host.game.showResult, isTrue);
+    expect(host.picker.value, isNull);
+
+    // The guest plays again on Classic. That uses the guest's turn.
+    guest.playAgain();
+    run(host, guest, 0.1);
+    expect(host.game.isOver, isFalse);
+    expect(guest.game.map, same(GameMap.classic));
+
+    // Now it's the host's turn: the guest can't choose.
+    finishRound();
+    expect(host.myTurnNext, isTrue);
+    expect(guest.myTurnNext, isFalse);
+    guest.playAgain();
+    guest.nextRound();
+    run(host, guest, 0.1);
+    expect(host.game.showResult, isTrue);
+    host.nextRound();
+    run(host, guest, 0.1);
+    expect(guest.picker.value, Team.red);
+  });
+
+  test('playing again after a Random pick rolls a new random map', () {
+    final (hostLink, guestLink) = linkPair();
+    final host = OnlineMatch(link: hostLink, isHost: true);
+    final guest = OnlineMatch(link: guestLink, isHost: false);
+    host.pickMap(GameMap.pillars, random: true);
+
+    for (var round = 0; round < 4; round++) {
+      final before = host.game.map;
+      host.game.blue.health = 0;
+      run(host, guest, 1.5);
+      // Whoever's turn it is plays again; the map still changes.
+      (host.myTurnNext ? host : guest).playAgain();
+      run(host, guest, 0.1);
+      expect(host.game.isOver, isFalse);
+      expect(host.game.map, isNot(same(before)));
+      expect(guest.game.map, same(host.game.map));
+    }
   });
 
   test('leaving tells the other device', () {
@@ -164,7 +256,8 @@ void main() {
     'host sends 20 updates a second, guest 15, and only keepalives when idle',
     () {
       final (hostLink, guestLink) = linkPair();
-      final host = OnlineMatch(link: hostLink, isHost: true);
+      final host = OnlineMatch(link: hostLink, isHost: true)
+        ..pickMap(GameMap.classic);
       final guest = OnlineMatch(link: guestLink, isHost: false);
 
       // Red drives for a second (before it reaches the wall and stops)
@@ -199,7 +292,8 @@ void main() {
 
   test('the result screen only costs keepalives', () {
     final (hostLink, guestLink) = linkPair();
-    final host = OnlineMatch(link: hostLink, isHost: true);
+    final host = OnlineMatch(link: hostLink, isHost: true)
+      ..pickMap(GameMap.classic);
     final guest = OnlineMatch(link: guestLink, isHost: false);
     host.game.blue.health = 0;
     run(host, guest, 2);
@@ -269,7 +363,7 @@ void main() {
 
     testWidgets('joining sees the arena turned around', (tester) async {
       await setUp(tester);
-      final (_, guestLink) = linkPair();
+      final (hostEnd, guestLink) = linkPair();
       String? joinedCode;
       await tester.pumpWidget(
         MaterialApp(
@@ -288,6 +382,19 @@ void main() {
       await tester.pump(const Duration(milliseconds: 500));
       expect(joinedCode, '0427');
       expect(find.text('RED'), findsOneWidget);
+      expect(find.text('RED is picking the map…'), findsOneWidget);
+
+      // The host picks a map and starts the round.
+      hostEnd.send(
+        jsonEncode({
+          't': 'state',
+          ...TankGame().toSnapshot(),
+          'g': [0, 0],
+          'p': null,
+        }),
+      );
+      await tester.pump();
+      expect(find.text('RED is picking the map…'), findsNothing);
 
       final state = tester.state<State>(find.byType(GameScreen));
       final match = (state as dynamic).widget.online as OnlineMatch;

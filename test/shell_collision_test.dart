@@ -52,10 +52,10 @@ void main() {
 
   test('a near miss flies past', () {
     final game = TankGame();
-    // Parallel lanes 20 apart, passing each other head-on.
+    // Parallel lanes 20 apart, passing each other head-on, clear of walls.
     game.shells
-      ..add(Shell(const Offset(20, 300), const Offset(0, -300), Team.red))
-      ..add(Shell(const Offset(40, 100), const Offset(0, 300), Team.blue));
+      ..add(Shell(const Offset(10, 300), const Offset(0, -300), Team.red))
+      ..add(Shell(const Offset(30, 100), const Offset(0, 300), Team.blue));
     for (var i = 0; i < 30; i++) {
       game.update(1 / 60);
     }

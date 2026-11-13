@@ -10,6 +10,7 @@ import 'ai.dart';
 import 'controls.dart';
 import 'game.dart';
 import 'lobby.dart';
+import 'maps.dart';
 import 'online.dart';
 
 void main() {
@@ -58,17 +59,74 @@ class MenuScreen extends StatefulWidget {
 class _MenuScreenState extends State<MenuScreen> {
   Difficulty _difficulty = Difficulty.normal;
 
+  /// Applies to every mode. Online games use the host's setting.
+  bool _powerUps = true;
+
   void _start(Difficulty? difficulty) {
     Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => GameScreen(difficulty: difficulty),
+        builder: (_) => GameScreen(difficulty: difficulty, powerUps: _powerUps),
       ),
     );
   }
 
   void _openLobby({required bool host}) {
-    Navigator.of(context)
-        .push(MaterialPageRoute<void>(builder: (_) => LobbyScreen(host: host)));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => LobbyScreen(host: host, powerUps: _powerUps),
+      ),
+    );
+  }
+
+  void _explainPowerUps() {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Power-ups'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'One appears now and then. Drive over it to collect it. '
+              'Timed ones last 8 seconds.',
+            ),
+            const SizedBox(height: 12),
+            for (final kind in PowerUpKind.values)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    PowerUpBadge(kind: kind, size: 26),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(
+                              text: '${kind.label}: ',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            TextSpan(text: kind.description),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -111,9 +169,34 @@ class _MenuScreenState extends State<MenuScreen> {
                       letterSpacing: 6,
                     ),
                   ),
-                  const SizedBox(height: 28),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: SwitchListTile(
+                          value: _powerUps,
+                          onChanged: (on) => setState(() => _powerUps = on),
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text(
+                            'Power-ups',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          subtitle: const Text('For every mode'),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: _explainPowerUps,
+                        tooltip: 'What do they do?',
+                        icon: const Icon(Icons.info_outline),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
                   const Text(
-                    'Single player',
+                    'Vs CPU',
                     style: TextStyle(fontSize: 16, color: Colors.white70),
                   ),
                   const SizedBox(height: 10),
@@ -149,7 +232,7 @@ class _MenuScreenState extends State<MenuScreen> {
                   ],
                   const SizedBox(height: 28),
                   const Text(
-                    'Two players, one phone or computer',
+                    'One device: two players',
                     style: TextStyle(fontSize: 16, color: Colors.white70),
                   ),
                   const SizedBox(height: 10),
@@ -176,7 +259,7 @@ class _MenuScreenState extends State<MenuScreen> {
                   ),
                   const SizedBox(height: 28),
                   const Text(
-                    'Two devices',
+                    'Online: two devices',
                     style: TextStyle(fontSize: 16, color: Colors.white70),
                   ),
                   const SizedBox(height: 10),
@@ -220,8 +303,16 @@ class _MenuScreenState extends State<MenuScreen> {
 
 class GameScreen extends StatefulWidget {
   /// With neither [difficulty] nor [online], two people share this device.
-  const GameScreen({super.key, this.difficulty, this.online})
-    : assert(difficulty == null || online == null);
+  const GameScreen({
+    super.key,
+    this.difficulty,
+    this.online,
+    this.powerUps = false,
+  }) : assert(difficulty == null || online == null);
+
+  /// Whether to play with power-ups. Online games use the host's setting
+  /// instead.
+  final bool powerUps;
 
   /// Single player against the computer.
   final Difficulty? difficulty;
@@ -235,7 +326,12 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen>
     with SingleTickerProviderStateMixin {
-  late final TankGame game = widget.online?.game ?? TankGame();
+  late final TankGame game =
+      widget.online?.game ?? TankGame(powerUps: widget.powerUps);
+
+  /// Whether the map for the next round is being chosen (when not online;
+  /// online matches keep track of whose turn it is to pick).
+  bool _picking = true;
   late final Ticker _ticker;
   Duration _last = Duration.zero;
 
@@ -265,14 +361,48 @@ class _GameScreenState extends State<GameScreen>
     _ticker = createTicker(_onTick)..start();
   }
 
-  void _rematch() {
+  /// Whether this round's map came from Random (when not online), so
+  /// playing again rolls a new one.
+  bool _roundRandom = false;
+
+  /// After a round: another round straight away, on the same map or, if it
+  /// came from Random, a new random one.
+  void _playAgain() {
     final online = _online;
     if (online != null) {
-      online.rematch();
+      online.playAgain();
       return;
     }
-    game.reset();
+    game.reset(map: _roundRandom ? game.randomMap() : game.map);
     _ai?.reset();
+  }
+
+  /// Whether this device chooses what happens after the round. Always,
+  /// except online when it's the other player's turn.
+  bool get _myChoiceNext => _online?.myTurnNext ?? true;
+
+  /// After a round: back to choosing a map.
+  void _nextRound() {
+    final online = _online;
+    if (online != null) {
+      online.nextRound();
+    } else {
+      setState(() => _picking = true);
+    }
+  }
+
+  /// Starts a round on [map], or a random map if it's null.
+  void _pickMap(GameMap? map) {
+    final chosen = map ?? game.randomMap();
+    final online = _online;
+    if (online != null) {
+      online.pickMap(chosen, random: map == null);
+      return;
+    }
+    _roundRandom = map == null;
+    game.reset(map: chosen);
+    _ai?.reset();
+    setState(() => _picking = false);
   }
 
   void _toMenu() => Navigator.of(context).pop();
@@ -366,7 +496,7 @@ class _GameScreenState extends State<GameScreen>
     final online = _online;
     if (online != null) {
       online.tick(step);
-    } else {
+    } else if (!_picking) {
       _ai?.update(step);
       game.update(step);
     }
@@ -492,11 +622,37 @@ class _GameScreenState extends State<GameScreen>
                     final d? => 'You beat the ${d.label} CPU',
                     null => 'You won the online battle',
                   },
-                  onRematch: _rematch,
+                  // Online, only the player whose turn it is chooses.
+                  onPlayAgain: _myChoiceNext ? _playAgain : null,
+                  onNewMap: _myChoiceNext ? _nextRound : null,
+                  turnNote: _myChoiceNext
+                      ? null
+                      : "${teamName(_online!.nextPicker)}'s turn to choose "
+                            'the next round',
                   onMenu: _toMenu,
                 )
               : const SizedBox.shrink(),
         ),
+        if (_online case final online?)
+          ValueListenableBuilder(
+            valueListenable: online.picker,
+            builder: (context, picker, _) => switch (picker) {
+              null => const SizedBox.shrink(),
+              _ when picker == online.me.team => MapPickerOverlay(
+                title: 'Your pick',
+                subtitle: 'Choose the map for this round.',
+                onPick: _pickMap,
+                onMenu: _toMenu,
+              ),
+              _ => _WaitingForPick(team: picker, onMenu: _toMenu),
+            },
+          )
+        else if (_picking)
+          MapPickerOverlay(
+            title: 'Choose a map',
+            onPick: _pickMap,
+            onMenu: _toMenu,
+          ),
         if (_online case final online?)
           ValueListenableBuilder(
             valueListenable: online.lost,
@@ -755,6 +911,27 @@ class HealthBar extends StatelessWidget {
                 ),
               ),
             ),
+            for (final kind in PowerUpKind.values)
+              if (tank.has(kind))
+                Padding(
+                  padding: const EdgeInsets.only(left: 3),
+                  // Flashes along with the ring as it runs out.
+                  child: Opacity(
+                    opacity: TankGame.warningFlashOff(tank.effects[kind]!)
+                        ? 0.2
+                        : 1,
+                    child: PowerUpBadge(kind: kind, size: 16),
+                  ),
+                ),
+            if (tank.chilled > 0)
+              Padding(
+                padding: const EdgeInsets.only(left: 3),
+                child: Icon(
+                  Icons.ac_unit,
+                  size: 16,
+                  color: powerUpColor(PowerUpKind.ice),
+                ),
+              ),
             SizedBox(
               width: 40,
               child: Text(
@@ -812,7 +989,7 @@ class ArenaPainter extends CustomPainter {
       ..color = const Color(0xFF4A4843)
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2;
-    for (final wall in TankGame.walls) {
+    for (final wall in game.walls) {
       final r = RRect.fromRectAndRadius(wall, const Radius.circular(3));
       canvas.drawRRect(r, wallFill);
       canvas.drawRRect(r.deflate(1), wallEdge);
@@ -828,16 +1005,27 @@ class ArenaPainter extends CustomPainter {
       _paintTank(canvas, tank);
     }
 
+    final powerUp = game.powerUp;
+    if (powerUp != null) _paintPowerUp(canvas, powerUp);
+
     for (final shell in game.shells) {
+      // Power shots are bigger.
+      final heavy = shell.damage > TankGame.damage;
       canvas.drawCircle(
         shell.position,
-        TankGame.shellRadius + 1.5,
+        TankGame.shellRadius + (heavy ? 3 : 1.5),
         Paint()..color = teamColor(shell.owner),
       );
+      // Ice shots have a blue center. A dimmer center means it has used its
+      // bounces: the next wall ends it.
+      final core = shell.icy ? powerUpColor(PowerUpKind.ice) : Colors.white;
       canvas.drawCircle(
         shell.position,
-        TankGame.shellRadius - 0.5,
-        Paint()..color = Colors.white,
+        TankGame.shellRadius - 0.5 + (heavy ? 1 : 0),
+        Paint()
+          ..color = shell.bounces < shell.maxBounces
+              ? core
+              : core.withValues(alpha: 0.35),
       );
     }
 
@@ -943,6 +1131,42 @@ class ArenaPainter extends CustomPainter {
         ..strokeWidth = 1.5,
     );
 
+    // Slowed by ice: an icy tint.
+    if (tank.chilled > 0 && tank.alive) {
+      canvas.drawCircle(
+        Offset.zero,
+        TankGame.tankRadius + 1,
+        Paint()..color = powerUpColor(PowerUpKind.ice).withValues(alpha: 0.45),
+      );
+    }
+
+    // Timed power-ups: a ring split between their colors.
+    final active = [
+      for (final kind in PowerUpKind.values)
+        if (tank.has(kind)) kind,
+    ];
+    if (active.isNotEmpty && tank.alive) {
+      final ring = Rect.fromCircle(
+        center: Offset.zero,
+        radius: TankGame.tankRadius + 4,
+      );
+      final sweep = math.pi * 2 / active.length;
+      for (var i = 0; i < active.length; i++) {
+        // Flashes as the effect is about to run out.
+        if (TankGame.warningFlashOff(tank.effects[active[i]]!)) continue;
+        canvas.drawArc(
+          ring,
+          -math.pi / 2 + sweep * i,
+          sweep,
+          false,
+          Paint()
+            ..color = powerUpColor(active[i])
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.5,
+        );
+      }
+    }
+
     if (tank.hitFlash > 0) {
       canvas.drawCircle(
         Offset.zero,
@@ -954,6 +1178,56 @@ class ArenaPainter extends CustomPainter {
 
     canvas.restore();
   }
+
+  /// A power-up: a pulsing colored circle with its icon. It blinks just
+  /// before it vanishes.
+  void _paintPowerUp(Canvas canvas, PowerUp powerUp) {
+    final age = powerUp.age;
+    final blinking = age > TankGame.powerUpLifetime - TankGame.powerUpBlinkTime;
+    if (blinking && (age * 6).floor().isOdd) return;
+
+    final r = TankGame.powerUpRadius * (1 + 0.1 * math.sin(age * 5));
+    final color = powerUpColor(powerUp.kind);
+    canvas.drawCircle(
+      powerUp.position,
+      r + 4,
+      Paint()..color = color.withValues(alpha: 0.25),
+    );
+    canvas.drawCircle(powerUp.position, r, Paint()..color = color);
+    canvas.drawCircle(
+      powerUp.position,
+      r,
+      Paint()
+        ..color = Colors.white
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+    final icon = _iconPainter(powerUp.kind);
+    icon.paint(
+      canvas,
+      powerUp.position - Offset(icon.width / 2, icon.height / 2),
+    );
+  }
+
+  static final Map<PowerUpKind, TextPainter> _icons = {};
+
+  /// Icons drawn on the arena, laid out once and reused.
+  static TextPainter _iconPainter(PowerUpKind kind) =>
+      _icons.putIfAbsent(kind, () {
+        final icon = powerUpIcon(kind);
+        return TextPainter(
+          text: TextSpan(
+            text: String.fromCharCode(icon.codePoint),
+            style: TextStyle(
+              fontFamily: icon.fontFamily,
+              package: icon.fontPackage,
+              fontSize: 12,
+              color: Colors.black87,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        )..layout();
+      });
 
   @override
   bool shouldRepaint(ArenaPainter oldDelegate) => oldDelegate.game != game;
@@ -968,7 +1242,9 @@ class ResultOverlay extends StatelessWidget {
     required this.viewer,
     required this.opponentLabel,
     required this.winSubtitle,
-    required this.onRematch,
+    required this.onPlayAgain,
+    required this.onNewMap,
+    this.turnNote,
     required this.onMenu,
   });
 
@@ -980,47 +1256,78 @@ class ResultOverlay extends StatelessWidget {
   /// Who "they" are, such as CPU.
   final String opponentLabel;
   final String winSubtitle;
-  final VoidCallback onRematch;
+
+  /// Another round straight away. Null greys it out.
+  final VoidCallback? onPlayAgain;
+
+  /// Back to choosing a map. Null greys it out.
+  final VoidCallback? onNewMap;
+
+  /// Shown under the buttons, such as whose turn it is to choose.
+  final String? turnNote;
   final VoidCallback onMenu;
 
   @override
   Widget build(BuildContext context) {
     final winner = game.winner;
     final viewer = this.viewer;
+    final secondary = OutlinedButton.styleFrom(
+      foregroundColor: Colors.white,
+      side: const BorderSide(color: Colors.white54),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+      textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+    );
+    final note = turnNote;
     final buttons = Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          FilledButton.icon(
-            onPressed: onRematch,
-            style: FilledButton.styleFrom(
-              backgroundColor: Colors.white,
-              foregroundColor: Colors.black,
-              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 18),
-              textStyle: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
+          // Wraps onto two lines on narrow phones.
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              FilledButton.icon(
+                onPressed: onPlayAgain,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 18,
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                icon: const Icon(Icons.replay),
+                label: const Text('Play again'),
               ),
-            ),
-            icon: const Icon(Icons.replay),
-            label: const Text('Rematch'),
-          ),
-          const SizedBox(width: 12),
-          OutlinedButton.icon(
-            onPressed: onMenu,
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.white,
-              side: const BorderSide(color: Colors.white54),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-              textStyle: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
+              OutlinedButton.icon(
+                onPressed: onNewMap,
+                style: secondary,
+                icon: const Icon(Icons.map),
+                label: const Text('New map'),
               ),
-            ),
-            icon: const Icon(Icons.home),
-            label: const Text('Menu'),
+              OutlinedButton.icon(
+                onPressed: onMenu,
+                style: secondary,
+                icon: const Icon(Icons.home),
+                label: const Text('Menu'),
+              ),
+            ],
           ),
+          if (note != null) ...[
+            const SizedBox(height: 10),
+            Text(
+              note,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 15, color: Colors.white70),
+            ),
+          ],
         ],
       ),
     );
@@ -1121,6 +1428,251 @@ class _ResultText extends StatelessWidget {
           style: const TextStyle(fontSize: 20, color: Colors.white70),
         ),
       ],
+    );
+  }
+}
+
+/// Covers the game while a map is chosen for the next round: a preview of
+/// each map, plus Random. Tapping one starts the round.
+class MapPickerOverlay extends StatelessWidget {
+  const MapPickerOverlay({
+    super.key,
+    required this.title,
+    this.subtitle,
+    required this.onPick,
+    required this.onMenu,
+  });
+
+  final String title;
+  final String? subtitle;
+
+  /// Called with the chosen map, or null for Random.
+  final ValueChanged<GameMap?> onPick;
+  final VoidCallback onMenu;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = this.subtitle;
+    return ColoredBox(
+      color: const Color(0xF215181C),
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 30,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+              if (subtitle != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  subtitle,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 15, color: Colors.white70),
+                ),
+              ],
+              const SizedBox(height: 20),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 14,
+                runSpacing: 14,
+                children: [
+                  for (final map in GameMap.all)
+                    _MapCard(
+                      label: map.name,
+                      onTap: () => onPick(map),
+                      child: CustomPaint(painter: _MapPreviewPainter(map)),
+                    ),
+                  _MapCard(
+                    label: 'Random',
+                    onTap: () => onPick(null),
+                    child: const ColoredBox(
+                      color: Color(0xFF3B4A36),
+                      child: Center(
+                        child: Icon(
+                          Icons.shuffle,
+                          color: Colors.white70,
+                          size: 34,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              TextButton.icon(
+                onPressed: onMenu,
+                icon: const Icon(Icons.home),
+                label: const Text('Menu'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown online while the other player chooses the map.
+class _WaitingForPick extends StatelessWidget {
+  const _WaitingForPick({required this.team, required this.onMenu});
+
+  final Team team;
+  final VoidCallback onMenu;
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: const Color(0xF215181C),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            Text(
+              '${teamName(team)} is picking the map…',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: teamColor(team),
+              ),
+            ),
+            const SizedBox(height: 4),
+            const Text(
+              'You pick the next one.',
+              style: TextStyle(fontSize: 15, color: Colors.white70),
+            ),
+            const SizedBox(height: 20),
+            TextButton.icon(
+              onPressed: onMenu,
+              icon: const Icon(Icons.home),
+              label: const Text('Menu'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MapCard extends StatelessWidget {
+  const _MapCard({
+    required this.label,
+    required this.onTap,
+    required this.child,
+  });
+
+  final String label;
+  final VoidCallback onTap;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      label: '$label map',
+      child: GestureDetector(
+        onTap: onTap,
+        child: Column(
+          children: [
+            Container(
+              width: 84,
+              height: 118,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: Colors.white38, width: 1.5),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(5),
+                child: child,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A tiny drawing of a map: its walls and the two starting spots.
+class _MapPreviewPainter extends CustomPainter {
+  _MapPreviewPainter(this.map);
+
+  final GameMap map;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.scale(size.width / TankGame.world.width);
+    canvas.drawRect(
+      Offset.zero & TankGame.world,
+      Paint()..color = const Color(0xFF3B4A36),
+    );
+    final wall = Paint()..color = const Color(0xFF8A867D);
+    for (final r in map.walls) {
+      canvas.drawRect(r, wall);
+    }
+    canvas.drawCircle(
+      Offset(TankGame.world.width / 2, TankGame.world.height - 50),
+      16,
+      Paint()..color = redColor,
+    );
+    canvas.drawCircle(
+      Offset(TankGame.world.width / 2, 50),
+      16,
+      Paint()..color = blueColor,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_MapPreviewPainter old) => !identical(old.map, map);
+}
+
+IconData powerUpIcon(PowerUpKind kind) => switch (kind) {
+  PowerUpKind.repair => Icons.favorite,
+  PowerUpKind.power => Icons.local_fire_department,
+  PowerUpKind.speed => Icons.bolt,
+  PowerUpKind.rapid => Icons.fast_forward,
+  PowerUpKind.ricochet => Icons.call_split,
+  PowerUpKind.ice => Icons.ac_unit,
+};
+
+Color powerUpColor(PowerUpKind kind) => switch (kind) {
+  PowerUpKind.repair => const Color(0xFFFF5C8A),
+  PowerUpKind.power => const Color(0xFFFF9100),
+  PowerUpKind.speed => const Color(0xFFFFEA00),
+  PowerUpKind.rapid => const Color(0xFF00E676),
+  PowerUpKind.ricochet => const Color(0xFFB388FF),
+  PowerUpKind.ice => const Color(0xFF80D8FF),
+};
+
+/// A power-up's colored circle and icon, for the menu and health bars.
+class PowerUpBadge extends StatelessWidget {
+  const PowerUpBadge({super.key, required this.kind, required this.size});
+
+  final PowerUpKind kind;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: powerUpColor(kind),
+        shape: BoxShape.circle,
+      ),
+      child: Icon(powerUpIcon(kind), size: size * 0.65, color: Colors.black87),
     );
   }
 }

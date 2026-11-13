@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:tanks/game.dart';
 import 'package:tanks/main.dart';
+import 'package:tanks/maps.dart';
 
 void main() {
   test('walls stop shells', () {
@@ -90,8 +91,10 @@ void main() {
 
     testWidgets('single-player mode fits a $name screen', (tester) async {
       await openMenu(tester);
+      await tester.ensureVisible(find.text('Hard'));
       await tester.tap(find.text('Hard'));
       await tester.pump();
+      await tester.ensureVisible(find.text('1 Player vs CPU'));
       await tester.tap(find.text('1 Player vs CPU'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
@@ -102,11 +105,76 @@ void main() {
       expect(find.text('FIRE'), findsOneWidget);
       expect(tester.takeException(), isNull);
 
-      // The close button returns to the menu.
+      // Pick a map, then the close button returns to the menu.
+      expect(find.text('Choose a map'), findsOneWidget);
+      await tester.ensureVisible(find.text('Classic'));
+      await tester.tap(find.text('Classic'));
+      await tester.pump();
+      expect(find.text('Choose a map'), findsNothing);
       await tester.tap(find.byIcon(Icons.close));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
       expect(find.text('1 Player vs CPU'), findsOneWidget);
     });
   }
+
+  testWidgets('a map is chosen before every round', (tester) async {
+    tester.view.physicalSize = const Size(393, 760) * 3;
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(const TankApp());
+
+    await tester.tap(find.text('1 Player vs CPU'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    final state = tester.state<State>(find.byType(GameScreen));
+    final game = (state as dynamic).game as TankGame;
+
+    // The game waits on the map choice.
+    expect(find.text('Choose a map'), findsOneWidget);
+    final spawn = game.blue.position;
+    await tester.pump(const Duration(seconds: 1));
+    expect(game.blue.position, spawn, reason: 'the CPU waits too');
+
+    await tester.tap(find.text('Zigzag'));
+    await tester.pump();
+    expect(game.map, same(GameMap.zigzag));
+    expect(find.text('Choose a map'), findsNothing);
+
+    Future<void> finishRound() async {
+      game.blue.health = 0;
+      for (var i = 0; i < 90; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+    }
+
+    // Play again: straight into another round on the same map.
+    await finishRound();
+    await tester.tap(find.text('Play again'));
+    await tester.pump();
+    expect(find.text('Choose a map'), findsNothing);
+    expect(game.map, same(GameMap.zigzag));
+    expect(game.isOver, isFalse);
+    expect(game.blue.health, TankGame.maxHealth);
+
+    // New map: back to the map choice.
+    await finishRound();
+    await tester.tap(find.text('New map'));
+    await tester.pump();
+    expect(find.text('Choose a map'), findsOneWidget);
+
+    await tester.ensureVisible(find.text('Random'));
+    await tester.tap(find.text('Random'));
+    await tester.pump();
+    expect(game.map, isNot(same(GameMap.zigzag)));
+    expect(game.blue.health, TankGame.maxHealth);
+
+    // Playing again after Random rolls a new random map.
+    final randomMap = game.map;
+    await finishRound();
+    await tester.tap(find.text('Play again'));
+    await tester.pump();
+    expect(game.map, isNot(same(randomMap)));
+    expect(find.text('Choose a map'), findsNothing);
+  });
 }

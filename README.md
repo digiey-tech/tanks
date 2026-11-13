@@ -3,14 +3,46 @@
 A tank battle for phones and computers, played in the browser.
 
 - **1 Player:** you drive the red tank against a computer-controlled blue
-  tank. Pick Easy, Normal or Hard.
+  tank. Pick Easy, Normal or Hard. Hard also bounces shots off walls to
+  reach you when you hide.
 - **2 Players:** share one phone, upright between you (Red plays from the
   bottom, Blue from the top), or share one keyboard on a computer.
 - **Two devices:** one player taps **Host** and gets a 4-digit code; the
   other taps **Join** and enters it. Each player sees their own tank at the
   bottom of their screen.
 
+Choose a mode in the menu, then a map before every round: **Classic**,
+**Pillars**, **Zigzag**, **Bunkers** or **Crossroads**, or **Random**. Every
+map looks the same from both sides, so neither player has an advantage. After
+a round, **Play again** starts another round straight away, on the same map
+or, if the map came from Random, a new random one; **New map** brings the map
+choice back. Online, the players take turns choosing: the host picks the first
+map, then after each round it's the other player's turn to either play again
+or pick a new map.
+
 **Play:** https://digiey-tech.github.io/tanks/
+
+## Power-ups
+
+Turn them on or off with the **Power-ups** switch in the menu (it applies to
+every mode; online games use the host's setting). Now and then one appears on
+a random open spot; drive over it to collect it. Only one is out at a time.
+After a timed one is collected, the next can't appear until its effect has
+run out plus a short pause (after Repair, just the pause). One nobody takes
+blinks and vanishes after 15 seconds.
+
+| Power-up | Effect |
+|---|---|
+| Repair | Heals one hit straight away |
+| Power shot | Each hit counts double, for 8 seconds. A power shot also punches through one enemy shell, then is back to normal |
+| Speed | Drive 50% faster, for 8 seconds |
+| Rapid fire | Reload twice as fast, for 8 seconds |
+| Ricochet | Shells bounce twice, for 8 seconds |
+| Ice shot | For 8 seconds, hits slow the enemy's driving and turret for a moment |
+
+Active power-ups show as a colored ring around the tank and icons next to its
+health bar; both flash for the last 2 seconds before the effect runs out. The Easy CPU doesn't go for them on purpose; Normal and Hard
+detour for ones nearby (Hard from farther away).
 
 ## Controls
 
@@ -39,8 +71,10 @@ edge):
 | Red | W A S D | Q / E | Space |
 | Blue | Arrow keys | , / . | / or Enter |
 
-Each hit takes 20 health. When shells from the two tanks meet, they destroy
-each other. The first tank to lose all 100 loses.
+Each hit takes 20 health. Shells bounce once off walls and the arena edge,
+then end at the next one (a shell that has bounced has a dimmer center). A
+tank's own shells never hurt it, even after bouncing. When shells from the
+two tanks meet, they destroy each other. The first tank to lose all 100 loses.
 
 ## Online play
 

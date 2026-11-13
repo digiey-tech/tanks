@@ -32,24 +32,83 @@ void main() {
     });
   }
 
-  test('CPU only fires when it has a clear shot', () {
+  for (final difficulty in Difficulty.values) {
+    test('${difficulty.label} CPU only fires shots that can reach', () {
+      final game = TankGame();
+      final ai = TankAi(
+        game: game,
+        tank: game.blue,
+        difficulty: difficulty,
+        random: math.Random(2),
+      );
+      var shots = 0;
+      for (var i = 0; i < 60 * 20 && !game.isOver; i++) {
+        ai.update(1 / 60);
+        final blue = game.blue;
+        if (blue.controls.fire && blue.cooldown <= 0) {
+          shots++;
+          final direct = game.clearShot(blue.position, game.red.position);
+          if (!direct) {
+            // Only Hard bounces shots, and only ones that get there.
+            expect(difficulty.bankShots, isTrue);
+            expect(
+              game.previewShot(blue, blue.aim, game.red.position),
+              isNotNull,
+            );
+          }
+        }
+        game.update(1 / 60);
+      }
+      expect(shots, greaterThan(0));
+    });
+  }
+
+  /// Blue (the CPU) and red on either side of the top-left wall block, with
+  /// no direct line between them, but a clear bounce off the left edge.
+  (TankGame, TankAi) hiddenBehindWall(Difficulty difficulty) {
     final game = TankGame();
+    game.blue.position = const Offset(60, 60);
+    game.red.position = const Offset(60, 200);
     final ai = TankAi(
       game: game,
       tank: game.blue,
-      difficulty: Difficulty.hard,
-      random: math.Random(2),
+      difficulty: difficulty,
+      random: math.Random(4),
     );
-    var shots = 0;
-    for (var i = 0; i < 60 * 20 && !game.isOver; i++) {
+    return (game, ai);
+  }
+
+  /// Runs with the CPU pinned in place, so it can't just drive into view.
+  void runPinned(TankGame game, TankAi ai, double seconds) {
+    final spot = game.blue.position;
+    for (var t = 0.0; t < seconds && !game.isOver; t += 1 / 60) {
       ai.update(1 / 60);
-      if (game.blue.controls.fire) {
-        shots++;
-        expect(game.clearShot(game.blue.position, game.red.position), isTrue);
-      }
       game.update(1 / 60);
+      game.blue.position = spot;
     }
-    expect(shots, greaterThan(0));
+  }
+
+  test('Hard CPU bounces shots at a target hiding behind a wall', () {
+    final (game, ai) = hiddenBehindWall(Difficulty.hard);
+    expect(game.clearShot(game.blue.position, game.red.position), isFalse);
+    runPinned(game, ai, 5);
+    expect(game.red.health, lessThan(TankGame.maxHealth));
+  });
+
+  test('Easy and Normal CPUs hold fire when the target is hidden', () {
+    for (final difficulty in [Difficulty.easy, Difficulty.normal]) {
+      final (game, ai) = hiddenBehindWall(difficulty);
+      var fired = 0;
+      final spot = game.blue.position;
+      for (var t = 0.0; t < 5; t += 1 / 60) {
+        ai.update(1 / 60);
+        if (game.blue.controls.fire) fired++;
+        game.update(1 / 60);
+        game.blue.position = spot;
+      }
+      expect(fired, 0, reason: difficulty.label);
+      expect(game.red.health, TankGame.maxHealth);
+    }
   });
 
   test('harder CPUs beat easier ones', () {

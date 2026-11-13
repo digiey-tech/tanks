@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 
 import 'game.dart';
@@ -13,6 +14,8 @@ enum Difficulty {
     shotGap: 0.55,
     dodge: 0,
     speed: 0.55,
+    bankShots: false,
+    powerUpRange: 0,
   ),
   normal(
     'Normal',
@@ -22,6 +25,8 @@ enum Difficulty {
     shotGap: 0.2,
     dodge: 0.45,
     speed: 0.8,
+    bankShots: false,
+    powerUpRange: 120,
   ),
   hard(
     'Hard',
@@ -31,6 +36,8 @@ enum Difficulty {
     shotGap: 0,
     dodge: 0.85,
     speed: 1,
+    bankShots: true,
+    powerUpRange: 180,
   );
 
   const Difficulty(
@@ -41,6 +48,8 @@ enum Difficulty {
     required this.shotGap,
     required this.dodge,
     required this.speed,
+    required this.bankShots,
+    required this.powerUpRange,
   });
 
   final String label;
@@ -63,6 +72,13 @@ enum Difficulty {
 
   /// Fraction of full driving speed.
   final double speed;
+
+  /// Whether it bounces shots off walls to reach a target it can't see.
+  final bool bankShots;
+
+  /// How far it will go out of its way for a power-up. Zero means it never
+  /// goes for them on purpose (though it may drive over one by chance).
+  final double powerUpRange;
 }
 
 /// Drives one tank by writing to its [TankControls], exactly like a player's
@@ -113,6 +129,9 @@ class TankAi {
     _lastTargetPosition = _target.position;
     _targetVelocity = Offset.zero;
     _dodgeDecisions.clear();
+    _bankShot = null;
+    _bankSearchIn = 0;
+    _bankTime = 0;
     _release();
   }
 
@@ -133,6 +152,20 @@ class TankAi {
     final inSight = game.clearShot(tank.position, target.position);
     _sightTime = inSight ? _sightTime + dt : 0;
 
+    // With no direct line, look for a bounce shot now and then (tracing
+    // shots takes a little work, and the best one changes slowly).
+    if (inSight || !difficulty.bankShots) {
+      _bankShot = null;
+      _bankTime = 0;
+    } else {
+      _bankSearchIn -= dt;
+      if (_bankSearchIn <= 0) {
+        _bankSearchIn = 0.2;
+        _bankShot = _findBankShot(target);
+      }
+      _bankTime = _bankShot == null ? 0 : _bankTime + dt;
+    }
+
     _aim(dt, target, inSight);
     _drive(dt, target);
   }
@@ -143,6 +176,48 @@ class TankAi {
     c.rotateLeft = false;
     c.rotateRight = false;
     c.fire = false;
+  }
+
+  /// Hard only: a bounce shot to take while there's no direct line, as the
+  /// angle to fire at and the shell's flight time.
+  ({double angle, double time})? _bankShot;
+  double _bankSearchIn = 0;
+
+  /// How long the current bounce shot has been available, standing in for
+  /// [_sightTime] before firing.
+  double _bankTime = 0;
+
+  /// Finds the quickest shot that reaches [target] after bouncing once.
+  ///
+  /// Mirroring the target across a surface gives the direction that bounces
+  /// off it toward the target. Each candidate is traced with the same
+  /// physics as real shells, so shots that would clip a block or miss the
+  /// surface are thrown out. A second pass leads a moving target by the
+  /// shell's actual flight time.
+  ({double angle, double time})? _findBankShot(Tank target) {
+    ({double angle, double time})? best;
+    for (final line in game.bounceLines) {
+      var aimAt = target.position;
+      ({double angle, double time})? shot;
+      for (var pass = 0; pass < 2; pass++) {
+        final mirrored = line.vertical
+            ? Offset(2 * line.at - aimAt.dx, aimAt.dy)
+            : Offset(aimAt.dx, 2 * line.at - aimAt.dy);
+        final toMirror = mirrored - tank.position;
+        final angle = math.atan2(toMirror.dy, toMirror.dx);
+        final time = game.previewShot(tank, angle, aimAt);
+        if (time == null) {
+          shot = null;
+          break;
+        }
+        shot = (angle: angle, time: time);
+        aimAt = target.position + _targetVelocity * (time * difficulty.lead);
+      }
+      if (shot != null && (best == null || shot.time < best.time)) {
+        best = shot;
+      }
+    }
+    return best;
   }
 
   void _aim(double dt, Tank target, bool inSight) {
@@ -156,11 +231,28 @@ class TankAi {
     }
 
     final distance = (target.position - tank.position).distance;
-    final travelTime = distance / TankGame.shellSpeed;
-    final aimPoint =
-        target.position + _targetVelocity * (travelTime * difficulty.lead);
-    final toAim = aimPoint - tank.position;
-    final desired = math.atan2(toAim.dy, toAim.dx) + _aimOffset;
+    final bank = _bankShot;
+    final double desired;
+    final double tolerance;
+    final bool ready;
+    if (!inSight && bank != null) {
+      // A bounce shot. Its longer path magnifies aiming mistakes, so be
+      // more careful with it.
+      desired = bank.angle + _aimOffset * 0.5;
+      tolerance = math.atan2(
+        TankGame.tankRadius * 0.6,
+        bank.time * TankGame.shellSpeed,
+      );
+      ready = _bankTime >= difficulty.reaction;
+    } else {
+      final travelTime = distance / TankGame.shellSpeed;
+      final aimPoint =
+          target.position + _targetVelocity * (travelTime * difficulty.lead);
+      final toAim = aimPoint - tank.position;
+      desired = math.atan2(toAim.dy, toAim.dx) + _aimOffset;
+      tolerance = math.atan2(TankGame.tankRadius, distance);
+      ready = inSight && _sightTime >= difficulty.reaction;
+    }
     final diff = _wrap(desired - tank.aim);
 
     // Stop turning once within one frame's turn, so it doesn't wobble.
@@ -169,15 +261,53 @@ class TankAi {
     c.rotateLeft = diff < -deadband;
 
     _shotWait = math.max(0, _shotWait - dt);
-    final tolerance = math.atan2(TankGame.tankRadius, distance);
     final shoot =
-        inSight &&
-        _sightTime >= difficulty.reaction &&
-        diff.abs() < tolerance &&
-        _shotWait <= 0 &&
-        tank.cooldown <= 0;
+        ready && diff.abs() < tolerance && _shotWait <= 0 && tank.cooldown <= 0;
     c.fire = shoot;
     if (shoot) _shotWait = TankGame.fireDelay + difficulty.shotGap;
+  }
+
+  /// The destination it's driving to, for tests.
+  @visibleForTesting
+  Offset? get destination => _destination;
+
+  /// The power-up it's currently chasing, and for how long.
+  PowerUp? _chasing;
+  double _chaseTime = 0;
+
+  /// One it gave up on, so it doesn't keep trying to reach it.
+  PowerUp? _gaveUpOn;
+
+  /// Where to go for a power-up worth a detour, or null.
+  Offset? _wantedPowerUp(Tank target, double dt) {
+    final powerUp = game.powerUp;
+    if (powerUp == null ||
+        difficulty.powerUpRange <= 0 ||
+        identical(powerUp, _gaveUpOn)) {
+      return null;
+    }
+    // Repair is no use at full health.
+    if (powerUp.kind == PowerUpKind.repair &&
+        tank.health >= TankGame.maxHealth) {
+      return null;
+    }
+    final mine = (powerUp.position - tank.position).distance;
+    if (mine > difficulty.powerUpRange) return null;
+    // Not worth racing an opponent who's much closer to it.
+    final theirs = (powerUp.position - target.position).distance;
+    if (theirs < mine * 0.6) return null;
+
+    if (!identical(powerUp, _chasing)) {
+      _chasing = powerUp;
+      _chaseTime = 0;
+    }
+    _chaseTime += dt;
+    // Probably stuck behind a wall; leave it.
+    if (_chaseTime > 4) {
+      _gaveUpOn = powerUp;
+      return null;
+    }
+    return powerUp.position;
   }
 
   void _drive(double dt, Tank target) {
@@ -196,6 +326,13 @@ class TankAi {
       _stuckTime += dt;
     } else {
       _stuckTime = 0;
+    }
+
+    // Detour for a handy power-up.
+    final wanted = _wantedPowerUp(target, dt);
+    if (wanted != null) {
+      _destination = wanted;
+      _replanIn = math.max(_replanIn, 0.3);
     }
 
     _replanIn -= dt;

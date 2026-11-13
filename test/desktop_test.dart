@@ -74,6 +74,9 @@ void main() {
     await tester.tap(find.text('1 Player vs CPU'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
+    // Every game starts by choosing a map.
+    await tester.tap(find.text('Classic'));
+    await tester.pump();
 
     final state = tester.state<State>(find.byType(GameScreen));
     final game = (state as dynamic).game as TankGame;
@@ -120,6 +123,9 @@ void main() {
     await tester.tap(find.text('2 Players'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
+    // Every game starts by choosing a map.
+    await tester.tap(find.text('Classic'));
+    await tester.pump();
 
     final state = tester.state<State>(find.byType(GameScreen));
     final game = (state as dynamic).game as TankGame;
@@ -189,6 +195,8 @@ void main() {
     await tester.tap(find.text(button));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
+    await tester.tap(find.text('Classic'));
+    await tester.pump();
     final state = tester.state<State>(find.byType(GameScreen));
     return (state as dynamic).game as TankGame;
   }

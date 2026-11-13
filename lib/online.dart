@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 
 import 'game.dart';
+import 'maps.dart';
 import 'net.dart';
 
 /// A battle between two devices.
@@ -11,8 +12,15 @@ import 'net.dart';
 /// The host plays Red and runs the real game. The guest plays Blue: it sends
 /// its controls to the host and draws whatever the host sends back, so both
 /// screens always agree on positions, hits and health.
+///
+/// Before each round one player picks the map: the host for the first round,
+/// then the guest, alternating. The host keeps track of whose turn it is and
+/// tells the guest in every update.
 class OnlineMatch {
-  OnlineMatch({required this.link, required this.isHost}) {
+  /// [powerUps] is the host's setting; the guest shows whatever power-ups
+  /// the host's game puts on the arena.
+  OnlineMatch({required this.link, required this.isHost, bool powerUps = false})
+    : game = TankGame(powerUps: isHost && powerUps) {
     link
       ..onMessage = _onMessage
       ..onClose = _drop;
@@ -20,7 +28,14 @@ class OnlineMatch {
 
   final NetLink link;
   final bool isHost;
-  final TankGame game = TankGame();
+  final TankGame game;
+
+  /// Whose turn it is to pick the next map, or null while a round is being
+  /// played. The host picks first.
+  final ValueNotifier<Team?> picker = ValueNotifier(Team.red);
+
+  /// Host: maps picked so far, which decides whose turn is next.
+  int _picks = 0;
 
   Tank get me => isHost ? game.red : game.blue;
   Tank get opponent => isHost ? game.blue : game.red;
@@ -65,7 +80,8 @@ class OnlineMatch {
       return;
     }
     if (isHost) {
-      game.update(dt);
+      // Tanks wait while someone picks the map.
+      if (picker.value == null) game.update(dt);
     } else {
       game.updateMirror(dt);
     }
@@ -87,12 +103,77 @@ class OnlineMatch {
     if (!isHost) _shots++;
   }
 
-  void rematch() {
+  /// Picks [map] for the next round, if it's this player's turn. [random]
+  /// says it came from the Random choice, so playing again rolls a new one.
+  void pickMap(GameMap map, {bool random = false}) {
+    if (picker.value != me.team) return;
     if (isHost) {
-      game.reset();
+      _startRound(map, random: random);
     } else {
-      link.send(jsonEncode({'t': 'rematch'}));
+      link.send(
+        jsonEncode({
+          't': 'map',
+          'i': GameMap.all.indexOf(map),
+          'r': random ? 1 : 0,
+        }),
+      );
     }
+  }
+
+  /// Whose turn it is to choose the next round, either by playing again or
+  /// picking a new map. Turns alternate, starting with the host.
+  Team get nextPicker =>
+      isHost ? (_picks.isEven ? Team.red : Team.blue) : _guestNextPicker;
+  Team _guestNextPicker = Team.red;
+
+  /// Whether this player chooses the next round.
+  bool get myTurnNext => nextPicker == me.team;
+
+  /// After a round, plays again on the same map (or a new random one if
+  /// the map came from Random). Only the player whose turn it is can, and
+  /// it counts as their pick.
+  void playAgain() {
+    if (isHost) {
+      _playAgain(Team.red);
+    } else if (myTurnNext) {
+      link.send(jsonEncode({'t': 'again'}));
+    }
+  }
+
+  /// After a round, moves on to picking a new map. Only the player whose
+  /// turn it is can.
+  void nextRound() {
+    if (isHost) {
+      _newMap(Team.red);
+    } else if (myTurnNext) {
+      link.send(jsonEncode({'t': 'next'}));
+    }
+  }
+
+  /// Whether the current round's map came from Random.
+  bool _roundRandom = false;
+
+  bool _canChoose(Team by) =>
+      picker.value == null && game.showResult && nextPicker == by;
+
+  void _playAgain(Team by) {
+    if (!_canChoose(by)) return;
+    _startRound(
+      _roundRandom ? game.randomMap() : game.map,
+      random: _roundRandom,
+    );
+  }
+
+  void _newMap(Team by) {
+    if (!_canChoose(by)) return;
+    picker.value = nextPicker;
+  }
+
+  void _startRound(GameMap map, {required bool random}) {
+    game.reset(map: map);
+    _roundRandom = random;
+    _picks++;
+    picker.value = null;
   }
 
   void dispose() {
@@ -102,6 +183,7 @@ class OnlineMatch {
       ..onClose = null
       ..close();
     lost.dispose();
+    picker.dispose();
     game.dispose();
   }
 
@@ -114,6 +196,8 @@ class OnlineMatch {
   Map<String, Object?> _snapshot() => {
     't': 'state',
     ...game.toSnapshot(),
+    'p': picker.value?.index,
+    'n': nextPicker.index,
     // Lets the guest show whether its double-tap shot is still waiting.
     'g': [_shots, opponent.controls.fireAtAim ? 1 : 0],
   };
@@ -154,8 +238,15 @@ class OnlineMatch {
         _applyState(message);
       case 'input' when isHost:
         _applyInput(message);
-      case 'rematch' when isHost:
-        game.reset();
+      case 'map' when isHost && picker.value == Team.blue:
+        final index = message['i'] as int;
+        if (index >= 0 && index < GameMap.all.length) {
+          _startRound(GameMap.all[index], random: message['r'] == 1);
+        }
+      case 'next' when isHost:
+        _newMap(Team.blue);
+      case 'again' when isHost:
+        _playAgain(Team.blue);
       case 'bye':
         _drop();
     }
@@ -188,7 +279,13 @@ class OnlineMatch {
   }
 
   void _applyState(Map<String, Object?> m) {
+    // Before applying, so the result screen sees whose turn it is when the
+    // snapshot redraws it.
+    final next = m['n'] as int?;
+    if (next != null) _guestNextPicker = Team.values[next];
     game.applySnapshot(m);
+    final pickerIndex = m['p'] as int?;
+    picker.value = pickerIndex == null ? null : Team.values[pickerIndex];
     final c = me.controls;
     final shot = m['g'] as List;
     _shotsAcknowledged = shot[0] as int;

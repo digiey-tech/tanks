@@ -3,6 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 
+import 'maps.dart';
+
 enum Team { red, blue }
 
 /// Live input for one tank, written by the touch controls and, on a
@@ -40,6 +42,50 @@ class TankControls {
   bool keyFire = false;
 }
 
+/// The kinds of power-up. Online play sends them by index, so only add new
+/// kinds to the end.
+enum PowerUpKind {
+  /// Heals one hit's worth of health, straight away.
+  repair('Repair', 'Heals one hit.'),
+
+  /// Hits count double.
+  power(
+    'Power shot',
+    'Each hit counts double, and it punches through one enemy shell.',
+  ),
+
+  /// Drives faster.
+  speed('Speed', 'Drive 50% faster.'),
+
+  /// Reloads twice as fast.
+  rapid('Rapid fire', 'Reload twice as fast.'),
+
+  /// Shells bounce twice instead of once.
+  ricochet('Ricochet', 'Shells bounce twice.'),
+
+  /// Hits slow the enemy down for a moment.
+  ice('Ice shot', 'Hits slow the enemy for a moment.');
+
+  const PowerUpKind(this.label, this.description);
+
+  final String label;
+  final String description;
+
+  /// Whether it lasts a while rather than acting once.
+  bool get timed => this != repair;
+}
+
+/// A power-up waiting on the arena to be driven over.
+class PowerUp {
+  PowerUp(this.position, this.kind);
+
+  final Offset position;
+  final PowerUpKind kind;
+
+  /// Seconds on the arena. It vanishes at [TankGame.powerUpLifetime].
+  double age = 0;
+}
+
 class Tank {
   Tank({
     required this.team,
@@ -72,7 +118,15 @@ class Tank {
   double cooldown = 0;
   double hitFlash = 0;
 
+  /// Timed power-ups in effect, with seconds left.
+  final Map<PowerUpKind, double> effects = {};
+
+  /// Seconds left of being slowed by an ice hit.
+  double chilled = 0;
+
   bool get alive => health > 0;
+
+  bool has(PowerUpKind kind) => (effects[kind] ?? 0) > 0;
 
   void reset() {
     position = spawn;
@@ -81,6 +135,8 @@ class Tank {
     health = TankGame.maxHealth;
     cooldown = 0;
     hitFlash = 0;
+    effects.clear();
+    chilled = 0;
     // Forget the last aim point so the gun doesn't swing toward it in the
     // next round. Held buttons stay as they are, since fingers may be down.
     controls.aimAt = null;
@@ -89,11 +145,41 @@ class Tank {
 }
 
 class Shell {
-  Shell(this.position, this.velocity, this.owner);
+  Shell(
+    this.position,
+    this.velocity,
+    this.owner, {
+    this.bounces = 0,
+    this.maxBounces = TankGame.maxBounces,
+    this.damage = TankGame.damage,
+    this.icy = false,
+  });
 
   Offset position;
-  final Offset velocity;
+  Offset velocity;
   final Team owner;
+
+  /// How many times it has bounced. It ends at the next wall once this
+  /// reaches [maxBounces].
+  int bounces;
+  final int maxBounces;
+
+  /// Health it takes on a hit. A power shot drops back to normal after
+  /// punching through an enemy shell.
+  double damage;
+
+  /// Whether a hit slows the target (the Ice shot power-up).
+  final bool icy;
+
+  Shell copy() => Shell(
+    position,
+    velocity,
+    owner,
+    bounces: bounces,
+    maxBounces: maxBounces,
+    damage: damage,
+    icy: icy,
+  );
 }
 
 class Blast {
@@ -105,9 +191,37 @@ class Blast {
 }
 
 class TankGame extends ChangeNotifier {
-  TankGame() {
+  /// Plays on [map], or on a randomly chosen map each round if [map] is
+  /// null. [powerUps] turns power-ups on. [random] can be fixed for tests.
+  TankGame({
+    GameMap? map = GameMap.classic,
+    this.powerUps = false,
+    math.Random? random,
+  }) : mapChoice = map,
+       _random = random ?? math.Random() {
     reset();
   }
+
+  /// The map picked for this game, or null to pick a new one at random
+  /// every round.
+  final GameMap? mapChoice;
+  final math.Random _random;
+
+  /// Whether power-ups appear during play.
+  final bool powerUps;
+
+  /// The power-up on the arena, if any. Only one at a time.
+  PowerUp? powerUp;
+
+  /// Seconds until the next chance for a power-up to appear.
+  double _powerUpWait = 0;
+
+  /// The map being played this round.
+  GameMap get map => _map!;
+  GameMap? _map;
+
+  /// Cover blocks for this round's map.
+  List<Rect> get walls => map.walls;
 
   static const Size world = Size(300, 420);
   static const double tankRadius = 13;
@@ -119,16 +233,35 @@ class TankGame extends ChangeNotifier {
   static const double maxHealth = 100;
   static const double damage = 20;
   static const double blastDuration = 0.35;
-  static const double resultDelay = 0.9;
 
-  /// Cover blocks, symmetric under a 180° rotation so neither side is favored.
-  static final List<Rect> walls = [
-    const Rect.fromLTWH(40, 128, 72, 16),
-    const Rect.fromLTWH(188, 128, 72, 16),
-    const Rect.fromLTWH(40, 276, 72, 16),
-    const Rect.fromLTWH(188, 276, 72, 16),
-    Rect.fromCenter(center: const Offset(150, 210), width: 32, height: 32),
-  ];
+  // Power-ups.
+  static const double powerUpRadius = 9;
+
+  /// Wait at the start of a round, and after one is used or vanishes,
+  /// before there's any chance of another.
+  static const double powerUpFirstWait = 4;
+  static const double powerUpWaitAfter = 6;
+
+  /// Once the wait is over, the chance each second that one appears.
+  static const double powerUpChancePerSecond = 0.35;
+
+  /// An untouched power-up vanishes after this long, so one can't sit in an
+  /// awkward spot forever. It blinks for the last few seconds.
+  static const double powerUpLifetime = 15;
+  static const double powerUpBlinkTime = 3;
+
+  /// How long timed power-ups last, and how long an ice hit slows a tank.
+  static const double effectDuration = 8;
+
+  /// A tank's power-up ring flashes for this long before the effect ends.
+  static const double effectWarning = 2;
+
+  /// Whether a power-up with [left] seconds to go is in the "off" part of
+  /// its warning flash (about three flashes a second).
+  static bool warningFlashOff(double left) =>
+      left <= effectWarning && (left * 6).floor().isOdd;
+  static const double chillDuration = 2.5;
+  static const double resultDelay = 0.9;
 
   final Tank red = Tank(
     team: Team.red,
@@ -161,16 +294,30 @@ class TankGame extends ChangeNotifier {
   /// The result screen waits briefly so players see the final hit land.
   bool get showResult => _over && _overTime >= resultDelay;
 
-  void reset() {
+  /// Starts a new round on [map], or else on [mapChoice] (a random map if
+  /// that's null too).
+  void reset({GameMap? map}) {
+    _map = map ?? mapChoice ?? randomMap();
     for (final tank in tanks) {
       tank.reset();
     }
+    powerUp = null;
+    _powerUpWait = powerUpFirstWait;
     shells.clear();
     blasts.clear();
     _over = false;
     _overTime = 0;
     _winner = null;
     notifyListeners();
+  }
+
+  /// A random map, different from the last round's when there is one.
+  GameMap randomMap() {
+    final choices = [
+      for (final m in GameMap.all)
+        if (!identical(m, _map)) m,
+    ];
+    return choices[_random.nextInt(choices.length)];
   }
 
   /// Everything another device needs to draw the battle, as JSON-friendly
@@ -188,6 +335,12 @@ class TankGame extends ChangeNotifier {
             angle(t.hull),
             t.health,
             r(t.hitFlash),
+            // Whole seconds, so countdowns don't make every update new.
+            [
+              for (final e in t.effects.entries)
+                if (e.value > 0) [e.key.index, e.value.ceil()],
+            ],
+            t.chilled > 0 ? 1 : 0,
           ],
       ],
       's': [
@@ -198,6 +351,10 @@ class TankGame extends ChangeNotifier {
             r(s.velocity.dx),
             r(s.velocity.dy),
             s.owner.index,
+            s.bounces,
+            s.maxBounces,
+            s.damage,
+            s.icy ? 1 : 0,
           ],
       ],
       'b': [
@@ -208,6 +365,16 @@ class TankGame extends ChangeNotifier {
       // there keeps snapshots identical, so the host can skip sending them
       // while players sit on the result screen.
       'o': _over ? [r(math.min(_overTime, resultDelay)), _winner?.index] : null,
+      'm': GameMap.all.indexOf(map),
+      'u': switch (powerUp) {
+        final u? => [
+          r(u.position.dx),
+          r(u.position.dy),
+          u.kind.index,
+          u.age.floor(),
+        ],
+        null => null,
+      },
     };
   }
 
@@ -215,7 +382,7 @@ class TankGame extends ChangeNotifier {
   // each new snapshot, and shells keep flying between snapshots.
   final List<_Pose> _posesFrom = [];
   final List<_Pose> _posesTo = [];
-  List<Offset> _shellsAt = [];
+  List<Shell> _shellsAt = [];
   double _sinceSnapshot = 0;
   double _snapshotGap = 1 / 20;
 
@@ -241,6 +408,22 @@ class TankGame extends ChangeNotifier {
         ..hull = d(v[3])
         ..health = d(v[4])
         ..hitFlash = d(v[5]);
+      final counting = Map.of(tanks[i].effects);
+      tanks[i].effects.clear();
+      if (v.length > 7) {
+        for (final e in (v[6] as List).cast<List>()) {
+          final kind = PowerUpKind.values[e[0] as int];
+          // The host sends whole seconds rounded up. Keep the guest's own
+          // smooth countdown while it agrees, so the warning flash is in
+          // step with the host's.
+          final sent = d(e[1]);
+          final local = counting[kind];
+          tanks[i].effects[kind] = local != null && local > sent - 1
+              ? math.min(local, sent)
+              : sent;
+        }
+        tanks[i].chilled = v[7] == 1 ? chillDuration : 0;
+      }
     }
 
     final target = [for (final t in tanks) _Pose.of(t)];
@@ -269,6 +452,10 @@ class TankGame extends ChangeNotifier {
             Offset(d(v[0]), d(v[1])),
             Offset(d(v[2]), d(v[3])),
             Team.values[v[4] as int],
+            bounces: v.length > 5 ? v[5] as int : 0,
+            maxBounces: v.length > 6 ? v[6] as int : maxBounces,
+            damage: v.length > 7 ? d(v[7]) : damage,
+            icy: v.length > 8 && v[8] == 1,
           ),
       ]);
 
@@ -279,8 +466,32 @@ class TankGame extends ChangeNotifier {
           Blast(Offset(d(v[0]), d(v[1])), big: v[3] == 1)..age = d(v[2]),
       ]);
 
-    _shellsAt = [for (final shell in shells) shell.position];
+    _shellsAt = [for (final s in shells) s.copy()];
     _sinceSnapshot = 0;
+
+    // Keep the local age of a power-up that's still there, so its pulse
+    // stays smooth; the host only sends whole seconds.
+    final u = snapshot['u'] as List?;
+    if (u == null) {
+      powerUp = null;
+    } else {
+      final position = Offset(d(u[0]), d(u[1]));
+      final kind = PowerUpKind.values[u[2] as int];
+      final current = powerUp;
+      if (current == null ||
+          current.kind != kind ||
+          current.position != position) {
+        powerUp = PowerUp(position, kind)..age = d(u[3]);
+      } else if ((current.age - d(u[3])).abs() > 1.5) {
+        current.age = d(u[3]);
+      }
+    }
+
+    // The host picks the map (it may change each round).
+    final mapIndex = snapshot['m'] as int?;
+    if (mapIndex != null && mapIndex >= 0 && mapIndex < GameMap.all.length) {
+      _map = GameMap.all[mapIndex];
+    }
 
     final over = snapshot['o'] as List?;
     _over = over != null;
@@ -298,12 +509,21 @@ class TankGame extends ChangeNotifier {
     for (var i = 0; i < tanks.length; i++) {
       _Pose.lerp(_posesFrom[i], _posesTo[i], t).applyTo(tanks[i]);
     }
-    // Shells fly in straight lines, so they can be moved ahead exactly. Stop
-    // after a short while in case a snapshot is late and the shell has hit
-    // something.
+    // Shells follow simple rules, so they can be moved ahead using the same
+    // bouncing as the host. Stop after a short while in case a snapshot is
+    // late and the shell has hit something.
+    powerUp?.age += dt;
+    for (final tank in tanks) {
+      tank.effects.updateAll((_, left) => math.max(0, left - dt));
+    }
     final ahead = math.min(_sinceSnapshot, 0.1);
     for (var i = 0; i < shells.length && i < _shellsAt.length; i++) {
-      shells[i].position = _shellsAt[i] + shells[i].velocity * ahead;
+      final base = _shellsAt[i];
+      final shell = shells[i]
+        ..position = base.position
+        ..velocity = base.velocity
+        ..bounces = base.bounces;
+      _moveShell(shell, ahead);
     }
     notifyListeners();
   }
@@ -315,6 +535,7 @@ class TankGame extends ChangeNotifier {
       for (final tank in tanks) {
         _updateTank(tank, dt);
       }
+      if (powerUps) _updatePowerUp(dt);
     }
     _updateShells(dt);
     for (final blast in blasts) {
@@ -330,7 +551,16 @@ class TankGame extends ChangeNotifier {
   void _updateTank(Tank tank, double dt) {
     tank.cooldown = math.max(0, tank.cooldown - dt);
     tank.hitFlash = math.max(0, tank.hitFlash - dt);
+    tank.chilled = math.max(0, tank.chilled - dt);
+    tank.effects.updateAll((_, left) => left - dt);
+    tank.effects.removeWhere((_, left) => left <= 0);
     if (!tank.alive) return;
+
+    // Ice slows driving and turning; Speed boosts driving.
+    final chill = tank.chilled > 0;
+    final turnSpeed = rotateSpeed * (chill ? 0.6 : 1);
+    final driveSpeed =
+        moveSpeed * (tank.has(PowerUpKind.speed) ? 1.5 : 1) * (chill ? 0.5 : 1);
 
     final controls = tank.controls;
 
@@ -344,11 +574,11 @@ class TankGame extends ChangeNotifier {
     if (turn != 0) {
       controls.aimAt = null;
       controls.fireAtAim = false;
-      tank.aim = _wrapAngle(tank.aim + turn * rotateSpeed * dt);
+      tank.aim = _wrapAngle(tank.aim + turn * turnSpeed * dt);
     } else if (aimAt != null && aimAt != tank.position) {
       final toAim = aimAt - tank.position;
       final diff = _wrapAngle(math.atan2(toAim.dy, toAim.dx) - tank.aim);
-      final step = rotateSpeed * dt;
+      final step = turnSpeed * dt;
       tank.aim = _wrapAngle(tank.aim + diff.clamp(-step, step));
       onTarget = diff.abs() <= step;
     }
@@ -359,7 +589,7 @@ class TankGame extends ChangeNotifier {
     final length = input.distance;
     if (length > 0.12) {
       // Ramp to full speed quickly so small thumb movements still feel snappy.
-      final speed = moveSpeed * ((length - 0.12) / 0.5).clamp(0.0, 1.0);
+      final speed = driveSpeed * ((length - 0.12) / 0.5).clamp(0.0, 1.0);
       final velocity = input / length * speed;
       _moveTank(tank, velocity * dt);
       tank.hull = math.atan2(velocity.dy, velocity.dx);
@@ -433,33 +663,89 @@ class TankGame extends ChangeNotifier {
         tank.position + dir * (tankRadius + 8),
         dir * shellSpeed,
         tank.team,
+        maxBounces: tank.has(PowerUpKind.ricochet) ? 2 : maxBounces,
+        damage: tank.has(PowerUpKind.power) ? damage * 2 : damage,
+        icy: tank.has(PowerUpKind.ice),
       ),
     );
-    tank.cooldown = fireDelay;
+    tank.cooldown = fireDelay * (tank.has(PowerUpKind.rapid) ? 0.5 : 1);
+  }
+
+  void _updatePowerUp(double dt) {
+    final current = powerUp;
+    if (current == null) {
+      _powerUpWait -= dt;
+      // After the wait, a random chance each moment.
+      if (_powerUpWait <= 0 &&
+          _random.nextDouble() < powerUpChancePerSecond * dt) {
+        _spawnPowerUp();
+      }
+      return;
+    }
+
+    current.age += dt;
+    for (final tank in tanks) {
+      if (!tank.alive) continue;
+      if ((tank.position - current.position).distance <
+          tankRadius + powerUpRadius) {
+        _collect(tank, current.kind);
+        powerUp = null;
+        // The wait starts once the effect is over (straight away for
+        // Repair, which acts at once).
+        _powerUpWait =
+            (current.kind.timed ? effectDuration : 0) + powerUpWaitAfter;
+        return;
+      }
+    }
+    if (current.age >= powerUpLifetime) {
+      powerUp = null;
+      _powerUpWait = powerUpWaitAfter;
+    }
+  }
+
+  /// Puts a random power-up on a random open spot that a tank can reach,
+  /// not right next to either tank.
+  void _spawnPowerUp() {
+    for (var attempt = 0; attempt < 40; attempt++) {
+      final spot = Offset(
+        20 + _random.nextDouble() * (world.width - 40),
+        20 + _random.nextDouble() * (world.height - 40),
+      );
+      if (!isOpen(spot, margin: 4)) continue;
+      if (tanks.any((t) => (t.position - spot).distance < 70)) continue;
+      final kind =
+          PowerUpKind.values[_random.nextInt(PowerUpKind.values.length)];
+      powerUp = PowerUp(spot, kind);
+      return;
+    }
+  }
+
+  void _collect(Tank tank, PowerUpKind kind) {
+    if (kind == PowerUpKind.repair) {
+      tank.health = math.min(maxHealth, tank.health + damage);
+    } else {
+      tank.effects[kind] = effectDuration;
+    }
   }
 
   void _updateShells(double dt) {
-    for (final shell in shells) {
-      shell.position += shell.velocity * dt;
+    final ended = <Shell>{
+      for (final shell in shells)
+        if (!_moveShell(shell, dt)) shell,
+    };
+    for (final shell in ended) {
+      blasts.add(Blast(shell.position));
     }
+    shells.removeWhere(ended.contains);
     _collideShells(dt);
 
     shells.removeWhere((shell) {
       final p = shell.position;
-
-      if (!(Offset.zero & world).contains(p)) return true;
-
-      for (final wall in walls) {
-        if (wall.inflate(shellRadius).contains(p)) {
-          blasts.add(Blast(p));
-          return true;
-        }
-      }
-
       for (final tank in tanks) {
         if (tank.team == shell.owner || !tank.alive) continue;
         if ((tank.position - p).distance < tankRadius + shellRadius) {
-          tank.health = math.max(0, tank.health - damage);
+          tank.health = math.max(0, tank.health - shell.damage);
+          if (shell.icy) tank.chilled = chillDuration;
           tank.hitFlash = 0.15;
           blasts.add(Blast(p, big: !tank.alive));
           return true;
@@ -469,11 +755,154 @@ class TankGame extends ChangeNotifier {
     });
   }
 
+  /// Bounces a shell normally gets before the next wall ends it (two with
+  /// the Ricochet power-up).
+  static const int maxBounces = 1;
+
+  /// Every flat surface a shell can bounce off, as lines: the arena edges
+  /// and each side of each wall block, pushed out by the shell's radius
+  /// (where a shell's center turns around).
+  List<({bool vertical, double at})> get bounceLines => [
+    (vertical: true, at: shellRadius),
+    (vertical: true, at: world.width - shellRadius),
+    (vertical: false, at: shellRadius),
+    (vertical: false, at: world.height - shellRadius),
+    for (final wall in walls) ...[
+      (vertical: true, at: wall.left - shellRadius),
+      (vertical: true, at: wall.right + shellRadius),
+      (vertical: false, at: wall.top - shellRadius),
+      (vertical: false, at: wall.bottom + shellRadius),
+    ],
+  ];
+
+  /// Traces a shell [tank] would fire at [angle], bouncing like a real one,
+  /// and returns how long it takes to pass within reach of [target], or null
+  /// if it ends first. Used by the computer player to plan bounce shots.
+  double? previewShot(
+    Tank tank,
+    double angle,
+    Offset target, {
+    double maxTime = 1.6,
+  }) {
+    final direction = Offset(math.cos(angle), math.sin(angle));
+    final shell = Shell(
+      tank.position + direction * (tankRadius + 8),
+      direction * shellSpeed,
+      tank.team,
+      maxBounces: tank.has(PowerUpKind.ricochet) ? 2 : maxBounces,
+    );
+    const step = 1 / 120;
+    for (var t = step; t <= maxTime; t += step) {
+      if (!_moveShell(shell, step)) return null;
+      if ((shell.position - target).distance < tankRadius) return t;
+    }
+    return null;
+  }
+
+  /// Moves [shell] for [dt], bouncing off wall blocks and the arena edge.
+  /// Returns false if it hit a wall with no bounces left; it is then left
+  /// where it hit.
+  ///
+  /// Works along the shell's path rather than checking where it ends up, so
+  /// a fast shell can't skip through a thin wall in one frame.
+  bool _moveShell(Shell shell, double dt) {
+    // A shell fired from inside a wall (a tank pressed against it) ends
+    // straight away.
+    for (final wall in walls) {
+      if (wall.inflate(shellRadius).contains(shell.position)) return false;
+    }
+    var remaining = dt;
+    // At most a couple of bounces fit in one frame (into a corner).
+    for (var step = 0; step < 3 && remaining > 0; step++) {
+      final from = shell.position;
+      final move = shell.velocity * remaining;
+      final hit = _firstHit(from, move);
+      if (hit == null) {
+        shell.position = from + move;
+        return true;
+      }
+      // Stop just short of the surface so the next step starts outside.
+      shell.position = from + move * math.max(0, hit.t - 1e-4);
+      if (shell.bounces >= shell.maxBounces) return false;
+      shell
+        ..bounces += 1
+        ..velocity = Offset(
+          hit.flipX ? -shell.velocity.dx : shell.velocity.dx,
+          hit.flipY ? -shell.velocity.dy : shell.velocity.dy,
+        );
+      remaining *= 1 - hit.t;
+    }
+    return true;
+  }
+
+  /// The first wall or arena edge a shell moving by [move] from [from]
+  /// touches, as a fraction of the move, and which way it bounces.
+  ({double t, bool flipX, bool flipY})? _firstHit(Offset from, Offset move) {
+    var best = double.infinity;
+    var flipX = false;
+    var flipY = false;
+
+    void consider(double t, {required bool x, required bool y}) {
+      if (t < 0 || t > 1) return;
+      if (t < best - 1e-9) {
+        best = t;
+        flipX = x;
+        flipY = y;
+      } else if ((t - best).abs() <= 1e-9) {
+        // Exactly into a corner: bounce straight back.
+        flipX |= x;
+        flipY |= y;
+      }
+    }
+
+    // Arena edges.
+    const r = shellRadius;
+    final to = from + move;
+    if (move.dx > 0 && to.dx > world.width - r) {
+      consider((world.width - r - from.dx) / move.dx, x: true, y: false);
+    } else if (move.dx < 0 && to.dx < r) {
+      consider((r - from.dx) / move.dx, x: true, y: false);
+    }
+    if (move.dy > 0 && to.dy > world.height - r) {
+      consider((world.height - r - from.dy) / move.dy, x: false, y: true);
+    } else if (move.dy < 0 && to.dy < r) {
+      consider((r - from.dy) / move.dy, x: false, y: true);
+    }
+
+    // Wall blocks, grown by the shell's radius so a point can stand in for
+    // the shell. The side it enters through decides the bounce.
+    for (final wall in walls) {
+      final box = wall.inflate(r);
+      final (enterX, exitX) = _slab(from.dx, move.dx, box.left, box.right);
+      final (enterY, exitY) = _slab(from.dy, move.dy, box.top, box.bottom);
+      final enter = math.max(enterX, enterY);
+      final exit = math.min(exitX, exitY);
+      if (enter > exit || enter < 0) continue;
+      consider(enter, x: enterX >= enterY, y: enterY >= enterX);
+    }
+
+    return best.isFinite ? (t: best, flipX: flipX, flipY: flipY) : null;
+  }
+
+  /// When a point moving by [d] from [p] is between [low] and [high] on one
+  /// axis, as fractions of the move.
+  static (double, double) _slab(double p, double d, double low, double high) {
+    if (d == 0) {
+      return p >= low && p <= high
+          ? (double.negativeInfinity, double.infinity)
+          : (double.infinity, double.negativeInfinity);
+    }
+    final a = (low - p) / d;
+    final b = (high - p) / d;
+    return a < b ? (a, b) : (b, a);
+  }
+
   /// How close two shells must pass to knock each other out. A little more
   /// than touching, matching how big they look on screen.
   static const double shellHitDistance = shellRadius * 2 + 3;
 
-  /// Destroys pairs of opposing shells that met during the last [dt].
+  /// Destroys pairs of opposing shells that met during the last [dt] (a
+  /// power shot survives meeting an ordinary one).
   ///
   /// Shells approaching head-on close in by over 10 units a frame, far more
   /// than their size, so checking only where they end up would let them pass
@@ -498,9 +927,21 @@ class TankGame extends ChangeNotifier {
                   .clamp(0.0, 1.0);
         if ((start + change * t).distance > shellHitDistance) continue;
 
-        hit
-          ..add(a)
-          ..add(b);
+        // A power shot punches through an ordinary shell, but loses its extra
+        // power doing so. Otherwise both are destroyed.
+        final aPower = a.damage > damage;
+        final bPower = b.damage > damage;
+        if (aPower && !bPower) {
+          hit.add(b);
+          a.damage = damage;
+        } else if (bPower && !aPower) {
+          hit.add(a);
+          b.damage = damage;
+        } else {
+          hit
+            ..add(a)
+            ..add(b);
+        }
         // Blast where they met.
         final back = 1 - t;
         blasts.add(
@@ -512,7 +953,7 @@ class TankGame extends ChangeNotifier {
             )!,
           ),
         );
-        break;
+        if (hit.contains(a)) break;
       }
     }
     shells.removeWhere(hit.contains);
