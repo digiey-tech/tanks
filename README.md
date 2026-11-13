@@ -39,7 +39,8 @@ edge):
 | Red | W A S D | Q / E | Space |
 | Blue | Arrow keys | , / . | / or Enter |
 
-Each hit takes 20 health. The first tank to lose all 100 loses.
+Each hit takes 20 health. When shells from the two tanks meet, they destroy
+each other. The first tank to lose all 100 loses.
 
 ## Online play
 

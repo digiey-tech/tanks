@@ -439,8 +439,12 @@ class TankGame extends ChangeNotifier {
   }
 
   void _updateShells(double dt) {
-    shells.removeWhere((shell) {
+    for (final shell in shells) {
       shell.position += shell.velocity * dt;
+    }
+    _collideShells(dt);
+
+    shells.removeWhere((shell) {
       final p = shell.position;
 
       if (!(Offset.zero & world).contains(p)) return true;
@@ -463,6 +467,55 @@ class TankGame extends ChangeNotifier {
       }
       return false;
     });
+  }
+
+  /// How close two shells must pass to knock each other out. A little more
+  /// than touching, matching how big they look on screen.
+  static const double shellHitDistance = shellRadius * 2 + 3;
+
+  /// Destroys pairs of opposing shells that met during the last [dt].
+  ///
+  /// Shells approaching head-on close in by over 10 units a frame, far more
+  /// than their size, so checking only where they end up would let them pass
+  /// through each other. Instead this finds how close each pair came at any
+  /// moment during the frame, from where they started to where they are now.
+  void _collideShells(double dt) {
+    final hit = <Shell>{};
+    for (var i = 0; i < shells.length; i++) {
+      final a = shells[i];
+      if (hit.contains(a)) continue;
+      for (var j = i + 1; j < shells.length; j++) {
+        final b = shells[j];
+        if (b.owner == a.owner || hit.contains(b)) continue;
+
+        // Separation at the start of the frame, and how it changed.
+        final change = (a.velocity - b.velocity) * dt;
+        final start = (a.position - b.position) - change;
+        final lengthSquared = change.distanceSquared;
+        final t = lengthSquared == 0
+            ? 0.0
+            : (-(start.dx * change.dx + start.dy * change.dy) / lengthSquared)
+                  .clamp(0.0, 1.0);
+        if ((start + change * t).distance > shellHitDistance) continue;
+
+        hit
+          ..add(a)
+          ..add(b);
+        // Blast where they met.
+        final back = 1 - t;
+        blasts.add(
+          Blast(
+            Offset.lerp(
+              a.position - a.velocity * dt * back,
+              b.position - b.velocity * dt * back,
+              0.5,
+            )!,
+          ),
+        );
+        break;
+      }
+    }
+    shells.removeWhere(hit.contains);
   }
 
   void _checkGameOver() {
